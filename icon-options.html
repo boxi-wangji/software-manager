@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>software-manager 图标候选</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b12;
+      --panel: rgba(255, 255, 255, 0.055);
+      --panel-2: rgba(255, 255, 255, 0.085);
+      --border: rgba(255, 255, 255, 0.13);
+      --text: #ecf4ff;
+      --muted: #8fa2ba;
+      --accent: #38f5cf;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+      background:
+        radial-gradient(circle at 10% 5%, rgba(56, 245, 207, 0.16), transparent 28%),
+        radial-gradient(circle at 88% 0%, rgba(92, 124, 255, 0.2), transparent 30%),
+        var(--bg);
+      color: var(--text);
+    }
+
+    header {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 34px 24px 16px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      letter-spacing: -0.04em;
+    }
+
+    .sub {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .toolbar {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 24px 18px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .chosen {
+      min-height: 36px;
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.045);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .grid {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 0 24px 40px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 18px;
+      background: linear-gradient(180deg, var(--panel-2), var(--panel));
+      cursor: pointer;
+      transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(56, 245, 207, 0.45);
+    }
+
+    .card.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(56, 245, 207, 0.25), 0 18px 60px rgba(56, 245, 207, 0.1);
+    }
+
+    .preview {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .icon {
+      width: 92px;
+      height: 92px;
+      flex: 0 0 auto;
+    }
+
+    .mini {
+      display: grid;
+      gap: 8px;
+    }
+
+    .mini svg {
+      width: 34px;
+      height: 34px;
+    }
+
+    .name {
+      margin: 14px 0 4px;
+      font-weight: 700;
+      font-size: 15px;
+    }
+
+    .desc {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    svg {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>software-manager 图标候选</h1>
+    <p class="sub">点击喜欢的卡片，记下编号告诉我。我会按选中的风格生成正式应用图标。</p>
+  </header>
+
+  <div class="toolbar">
+    <div id="chosen" class="chosen">还没选择</div>
+  </div>
+
+  <main class="grid" id="grid"></main>
+
+  <script>
+    const icons = [
+      ["01", "青绿软件盒", "偏现代、干净，适合软件管家主图标", "box", ["#0f172a", "#38f5cf", "#7c8cff"]],
+      ["02", "下载仓库", "突出安装包、下载、管理", "download", ["#111827", "#47e6a9", "#5da7ff"]],
+      ["03", "自动化齿轮", "突出自动化流程和安装动作", "gear", ["#0b1020", "#5eead4", "#facc15"]],
+      ["04", "安装向导", "更像安装器和步骤流程", "steps", ["#101827", "#22c55e", "#60a5fa"]],
+      ["05", "极简 S", "保留 S 字母但更稳重", "letter", ["#0a0f1c", "#36f1cd", "#93c5fd"]],
+      ["06", "应用方块", "偏 Windows 应用商店风格", "tiles", ["#111827", "#34d399", "#818cf8"]],
+      ["07", "闪电安装", "强调快速安装", "bolt", ["#111827", "#f59e0b", "#38f5cf"]],
+      ["08", "盾牌管理", "强调管理员权限、安全安装", "shield", ["#0f172a", "#22d3ee", "#a78bfa"]],
+      ["09", "终端自动化", "偏工具感、脚本感", "terminal", ["#020617", "#38f5cf", "#64748b"]],
+      ["10", "路径文件夹", "强调安装路径和文件整理", "folder", ["#111827", "#fbbf24", "#38bdf8"]],
+      ["11", "精准定位", "适合视觉定位/自动点击功能", "target", ["#0b1120", "#fb7185", "#38f5cf"]],
+      ["12", "软件矩阵", "多软件管理，识别度较高", "matrix", ["#0f172a", "#2dd4bf", "#60a5fa"]]
+    ];
+
+    function svg(id, type, c) {
+      const [bg, a, b] = c;
+      const defs = `
+        <defs>
+          <linearGradient id="g${id}" x1="18" y1="8" x2="76" y2="86">
+            <stop stop-color="${a}"/>
+            <stop offset="1" stop-color="${b}"/>
+          </linearGradient>
+          <filter id="s${id}" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="${a}" flood-opacity=".28"/>
+          </filter>
+        </defs>`;
+      const base = `<rect x="8" y="8" width="80" height="80" rx="22" fill="${bg}"/><rect x="12" y="12" width="72" height="72" rx="18" fill="url(#g${id})" opacity=".14"/><rect x="8.5" y="8.5" width="79" height="79" rx="21.5" fill="none" stroke="url(#g${id})" stroke-width="1.4"/>`;
+      const shapes = {
+        box: `<path d="M30 39l18-10 18 10-18 10-18-10z" fill="url(#g${id})"/><path d="M30 43l18 10 18-10v17L48 71 30 60V43z" fill="url(#g${id})" opacity=".8"/><circle cx="68" cy="25" r="5" fill="${a}"/>`,
+        download: `<rect x="28" y="53" width="40" height="15" rx="5" fill="url(#g${id})" opacity=".9"/><path d="M48 24v29m0 0L36 41m12 12l12-12" stroke="${a}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>`,
+        gear: `<circle cx="48" cy="48" r="17" fill="none" stroke="url(#g${id})" stroke-width="8"/><circle cx="48" cy="48" r="6" fill="${a}"/><path d="M48 18v10M48 68v10M18 48h10M68 48h10M27 27l7 7M62 62l7 7M69 27l-7 7M34 62l-7 7" stroke="${b}" stroke-width="5" stroke-linecap="round"/>`,
+        steps: `<path d="M25 31h20v12H25zM51 43h20v12H51zM25 56h20v12H25z" fill="url(#g${id})"/><path d="M45 37h10M45 62h10" stroke="${a}" stroke-width="4" stroke-linecap="round"/>`,
+        letter: `<text x="48" y="62" text-anchor="middle" font-size="42" font-weight="800" font-family="Segoe UI, sans-serif" fill="url(#g${id})">S</text><circle cx="70" cy="25" r="5" fill="${a}"/><circle cx="27" cy="70" r="4" fill="${b}"/>`,
+        tiles: `<rect x="25" y="25" width="19" height="19" rx="5" fill="${a}"/><rect x="52" y="25" width="19" height="19" rx="5" fill="${b}"/><rect x="25" y="52" width="19" height="19" rx="5" fill="${b}"/><rect x="52" y="52" width="19" height="19" rx="5" fill="${a}"/>`,
+        bolt: `<path d="M53 20L29 52h16l-5 24 27-36H50l3-20z" fill="url(#g${id})" filter="url(#s${id})"/>`,
+        shield: `<path d="M48 20l24 9v18c0 15-9 25-24 31-15-6-24-16-24-31V29l24-9z" fill="url(#g${id})" opacity=".9"/><path d="M38 49l7 7 15-18" fill="none" stroke="${bg}" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>`,
+        terminal: `<rect x="22" y="27" width="52" height="42" rx="9" fill="url(#g${id})" opacity=".9"/><path d="M33 42l8 7-8 7M47 57h16" stroke="${bg}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>`,
+        folder: `<path d="M20 35h23l6 7h27v25a7 7 0 0 1-7 7H27a7 7 0 0 1-7-7V35z" fill="url(#g${id})"/><path d="M20 35a7 7 0 0 1 7-7h16l6 7H20z" fill="${a}"/>`,
+        target: `<circle cx="48" cy="48" r="27" fill="none" stroke="url(#g${id})" stroke-width="6"/><circle cx="48" cy="48" r="13" fill="none" stroke="${a}" stroke-width="5"/><circle cx="48" cy="48" r="4" fill="${b}"/><path d="M48 15v13M48 68v13M15 48h13M68 48h13" stroke="${a}" stroke-width="4" stroke-linecap="round"/>`,
+        matrix: `<rect x="22" y="22" width="18" height="18" rx="5" fill="${a}"/><rect x="45" y="22" width="29" height="18" rx="5" fill="${b}"/><rect x="22" y="45" width="29" height="29" rx="7" fill="${b}"/><rect x="56" y="45" width="18" height="29" rx="5" fill="${a}"/>`
+      };
+      return `<svg viewBox="0 0 96 96" class="icon" aria-hidden="true">${defs}${base}${shapes[type]}</svg>`;
+    }
+
+    const grid = document.getElementById("grid");
+    const chosen = document.getElementById("chosen");
+
+    icons.forEach(([id, name, desc, type, colors]) => {
+      const card = document.createElement("button");
+      card.className = "card";
+      card.type = "button";
+      card.innerHTML = `
+        <div class="preview">
+          ${svg(id, type, colors)}
+          <div class="mini">
+            ${svg(id + "a", type, colors).replace('class="icon"', '')}
+            ${svg(id + "b", type, colors).replace('class="icon"', '')}
+          </div>
+        </div>
+        <p class="name">${id}. ${name}</p>
+        <p class="desc">${desc}</p>
+      `;
+      card.addEventListener("click", async () => {
+        document.querySelectorAll(".card").forEach((el) => el.classList.remove("selected"));
+        card.classList.add("selected");
+        const text = `${id}. ${name}`;
+        chosen.textContent = `已选择：${text}`;
+        try {
+          await navigator.clipboard.writeText(text);
+          chosen.textContent += "（已复制）";
+        } catch {
+          chosen.textContent += "（告诉我这个编号即可）";
+        }
+      });
+      grid.appendChild(card);
+    });
+  </script>
+</body>
+</html>
