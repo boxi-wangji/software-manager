@@ -26,3 +26,8 @@ dist-ssr
 # 便携包输出 (含 WebView2, 体积大)
 /release/
 src-tauri/target/
+
+# 一次性恢复脚本/中间产物，勿入库
+*.recovered
+scripts/restore-app*.mjs
+scripts/fix-lib-encoding.mjs

@@ -29,7 +29,7 @@ use visual_target::{
 };
 use custom_software::{add_custom_software, remove_custom_software};
 
-// 妫€娴嬬數鑴戞灦�?Windows 涓婅繑鍥?x64 �?arm64
+// 检测电脑架构：Windows 上返回 x64 或 arm64�?Windows 涓婅繑鍥?x64 �?arm64
 #[tauri::command]
 fn detect_arch() -> String {
     if cfg!(target_arch = "x86_64") {
@@ -41,7 +41,7 @@ fn detect_arch() -> String {
     }
 }
 
-// 鏌ユ墍鏈夎蒋浠剁殑鏈€鏂扮増淇℃�?
+// 查所有软件的最新版信息�?
 #[tauri::command]
 async fn fetch_all_software() -> Result<Vec<SoftwareInfo>, String> {
     let list = software_list();
@@ -55,11 +55,11 @@ async fn fetch_all_software() -> Result<Vec<SoftwareInfo>, String> {
                 results.push(info);
             }
             Err(e) => {
-                // 涓€涓け璐ヤ笉褰卞搷鍏朵粬,杩斿洖閿欒淇℃伅鍗犱綅
+                // 一个失败不影响其他，返回错误信息占位
                 results.push(SoftwareInfo {
                     id: target.id.clone(),
                     display_name: target.display_name.clone(),
-                    latest_version: format!("鏌ヨ澶辫触: {}", e),
+                    latest_version: format!("查询失败: {}", e),
                     release_url: String::new(),
                     published_at: String::new(),
                     portable: None,
@@ -118,7 +118,8 @@ async fn fetch_one_github_release(
 
     let release: GithubRelease = resp.json().await.map_err(|e| e.to_string())?;
 
-    // 鎸戝嚭渚挎惡�?    let portable = release
+        // 挑出便携版
+    let portable = release
         .assets
         .iter()
         .find(|a| is_portable_target(id, &a.name))
@@ -184,7 +185,7 @@ async fn fetch_wegame_release(target: &SoftwareTarget) -> Result<SoftwareInfo, S
         .trim()
         .strip_prefix("var wegame_home_configs = ")
         .and_then(|s| s.strip_suffix(';'))
-        .ok_or("error")?;
+        .ok_or("无法解析 WeGame 配置 JSON")?;
     let config: WegameHomeConfigs = serde_json::from_str(json).map_err(|e| e.to_string())?;
 
     let item = config
@@ -192,7 +193,7 @@ async fn fetch_wegame_release(target: &SoftwareTarget) -> Result<SoftwareInfo, S
         .iter()
         .find(|item| item.name == "new_downloads")
         .or_else(|| config.data.iter().find(|item| item.name == "downloads"))
-        .ok_or("error")?;
+        .ok_or("WeGame 配置中未找到下载项")?;
     let downloads: Vec<WegameDownload> = serde_json::from_str(&item.value).map_err(|e| e.to_string())?;
     let url = downloads
         .iter()
@@ -206,9 +207,9 @@ async fn fetch_wegame_release(target: &SoftwareTarget) -> Result<SoftwareInfo, S
                 .find(|item| item.name == "downloadUrl")
                 .and_then(|item| serde_json::from_str::<String>(&item.value).ok())
         })
-        .ok_or("error")?;
+        .ok_or("WeGame 配置中未找到 PC 下载链接")?;
 
-    let file_name = file_name_from_url(&url).ok_or("error")?;
+    let file_name = file_name_from_url(&url).ok_or("无法从 WeGame 下载链接解析文件名")?;
     let size = fetch_content_length(&client, &url).await.unwrap_or(0);
 
     Ok(SoftwareInfo {
@@ -243,7 +244,7 @@ async fn fetch_amd_adrenalin_release(target: &SoftwareTarget) -> Result<Software
             published_at: "2026-06-22".into(),
         });
 
-    let file_name = file_name_from_url(&release.download_url).ok_or("error")?;
+    let file_name = file_name_from_url(&release.download_url).ok_or("无法解析 AMD 安装包文件名")?;
     let size = fetch_content_length_with_referer(&client, &release.download_url, &release.release_url).await.unwrap_or(0);
 
     Ok(SoftwareInfo {
@@ -467,7 +468,7 @@ fn version_from_wegame_file(file_name: &str) -> String {
     if let Some(version) = stem.split('.').find(|part| part.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)) {
         return format!("v{}", version);
     }
-    "瀹�5�7�?latest".into()
+    "v未知 (latest)".into()
 }
 
 #[tauri::command]
@@ -516,7 +517,7 @@ fn restart_as_admin_cmd(app: tauri::AppHandle) -> Result<(), String> {
         ) -> isize;
     }
 
-    let exe = std::env::current_exe().map_err(|e| format!("璇诲彇绋嬪簭璺緞澶辫触: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("读取程序路径失败: {e}"))?;
     let verb = wide_null(OsStr::new("runas"));
     let file = wide_null(exe.as_os_str());
     let dir = exe
@@ -535,7 +536,7 @@ fn restart_as_admin_cmd(app: tauri::AppHandle) -> Result<(), String> {
         )
     };
     if code <= 32 {
-        return Err(format!("绠＄悊鍛橀噸鍚け璐ワ紝ShellExecuteW={code}"));
+        return Err(format!("管理员重启失败，ShellExecuteW={code}"));
     }
 
     app.exit(0);
@@ -545,11 +546,11 @@ fn restart_as_admin_cmd(app: tauri::AppHandle) -> Result<(), String> {
 #[cfg(not(windows))]
 #[tauri::command]
 fn restart_as_admin_cmd(_app: tauri::AppHandle) -> Result<(), String> {
-    Err("褰撳墠骞冲彴涓嶉渶瑕佺鐞嗗憳閲嶅惎".into())
+    Err("当前平台不需要管理员重启".into())
 }
 
 #[tauri::command]
-pub async fn winget_cli_install_cmd(path: String) -> Result<(), String> {
+async fn winget_cli_install_cmd(path: String) -> Result<(), String> {
     // 1. Run Add-AppxPackage
     let out = std::process::Command::new("powershell")
         .args(&["-NoProfile", "-Command", &format!("Add-AppxPackage -Path '{}'", path)])
@@ -558,7 +559,7 @@ pub async fn winget_cli_install_cmd(path: String) -> Result<(), String> {
     
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("瀹夎澶辫触: {}", err));
+        return Err(format!("安装失败: {}", err));
     }
 
     // 2. Run winget settings (this requires admin rights, and might fail if we are not elevated. But the app tries its best)
@@ -569,7 +570,7 @@ pub async fn winget_cli_install_cmd(path: String) -> Result<(), String> {
     
     if !out2.status.success() {
         let err = String::from_utf8_lossy(&out2.stderr);
-        return Err(format!("瀹夎鎴愬姛锛屼絾閰嶇疆 BypassCertificatePinningForMicrosoftStore 澶辫�? {}", err));
+        return Err(format!("安装成功，但配置 BypassCertificatePinningForMicrosoftStore 失败: {}", err));
     }
 
     Ok(())

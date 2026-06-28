@@ -1,4 +1,4 @@
-?mport { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -228,11 +228,11 @@ function draftFromStep(step: Partial<AutomationStep> & { id: string }): Automati
 }
 
 function stepTypeLabel(step: AutomationStep): string {
-  if (step.action === "closeWindow") return "";
-  if (step.action === "inputText") return "";
-  if (step.matchType === "point") return "";
-  if (step.matchType === "color") return "";
-  return "";
+  if (step.action === "closeWindow") return "关闭窗口";
+  if (step.action === "inputText") return "输入路径";
+  if (step.matchType === "point") return "准星";
+  if (step.matchType === "color") return "颜色";
+  return "文字";
 }
 
 function getStepRowShift(idx: number, from: number, over: number, rowH: number): number {
@@ -284,11 +284,11 @@ function softwareSourceKind(sw: SoftwareInfo): "github" | "official" {
 }
 
 function softwareSourceLabel(sw: SoftwareInfo): string {
-  return softwareSourceKind(sw) === "github" ? "GitHub" : "";
+  return softwareSourceKind(sw) === "github" ? "GitHub" : "官网";
 }
 
 function softwareKindLabel(sw: SoftwareInfo): string {
-  return sw.install_kind === "installer" ? "" : "";
+  return sw.install_kind === "installer" ? "安装包" : "便携版";
 }
 
 /*  helpers  */
@@ -423,18 +423,16 @@ function DirExplorer({
                   <span className="dir-guide" aria-hidden="true" />
                   <IconFolder className="dir-icon-folder" />
                   <span className="dir-node-label">{sw.display_name}</span>
-                  {installed[sw.id] && <span className="dir-pill"></span>}
+                  {installed[sw.id] && <span className="dir-pill">已安装</span>}
                 </div>
                 {active && paths && (
                   <div className="dir-detail">
-                    <div className="dir-detail-title"></div>
+                    <div className="dir-detail-title">路径详情</div>
                     <div className="dir-detail-row">
-                      <span className="dir-detail-key"></span>
-                      <code className="dir-detail-val">{paths.install_dir}</code>
+                      <span className="dir-detail-key">安装目录</span><code className="dir-detail-val">{paths.install_dir}</code>
                     </div>
                     <div className="dir-detail-row">
-                      <span className="dir-detail-key"></span>
-                      <code className="dir-detail-val">{paths.package_file}</code>
+                      <span className="dir-detail-key">缓存安装包</span><code className="dir-detail-val">{paths.package_file}</code>
                     </div>
                     <div className="dir-detail-row">
                       <span className="dir-detail-key">
@@ -467,7 +465,7 @@ function DirExplorer({
                   <IconFolder className="dir-icon-folder" />
                   <span className="dir-node-label">{sw.display_name}</span>
                   <span className="dir-node-meta">{sw.latest_version}</span>
-                  {cached && <span className="dir-pill dir-pill-cache"></span>}
+                  {cached && <span className="dir-pill dir-pill-cache">已缓存</span>}
                 </div>
                 {sw.portable && (
                   <div className="dir-node dir-node-file">
@@ -482,12 +480,12 @@ function DirExplorer({
             );
           })}
 
-          {items.length === 0 && <div className="dir-empty">?/div>}
+          {items.length === 0 && <div className="dir-empty">暂无软件目录</div>}
         </div>
       </div>
 
       {selectedSw && !selectedPaths && (
-        <div className="dir-footnote">electedSw.display_name}?/div>
+        <div className="dir-footnote">选中「{selectedSw.display_name}」查看路径</div>
       )}
     </div>
   );
@@ -512,13 +510,13 @@ function WindowControls() {
 
   return (
     <div className="window-controls">
-      <button className="win-btn" type="button" aria-label="? onPointerDown={(e) => e.stopPropagation()} onClick={() => void win.minimize()}>
+      <button className="win-btn" type="button" aria-label="最小化" onPointerDown={(e) => e.stopPropagation()} onClick={() => void win.minimize()}>
         <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5h8" stroke="currentColor" strokeWidth="1.2" /></svg>
       </button>
-      <button className="win-btn" type="button" aria-label="" onPointerDown={(e) => e.stopPropagation()} onClick={() => void win.toggleMaximize()}>
+      <button className="win-btn" type="button" aria-label="最大化" onPointerDown={(e) => e.stopPropagation()} onClick={() => void win.toggleMaximize()}>
         <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg>
       </button>
-      <button className="win-btn win-btn-close" type="button" aria-label="? onPointerDown={(e) => e.stopPropagation()} onClick={() => void closeWindow()}>
+      <button className="win-btn win-btn-close" type="button" aria-label="最小化" onPointerDown={(e) => e.stopPropagation()} onClick={() => void closeWindow()}>
         <svg viewBox="0 0 12 12" aria-hidden="true">
           <path d="M3 3l6 6M9 3L3 9" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
         </svg>
@@ -545,7 +543,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
 
   async function openWeGameInstaller() {
     const sw = software.find((s) => s.id === "wegame");
-    if (!sw || !sw.portable) return alert("?WeGame ");
+    if (!sw || !sw.portable) return alert("未找到 WeGame 安装包信息，请先加载软件库。");
     try {
       setBusy(true);
       const launch = await invoke<WeGameInstallResult>("launch_wegame_installer_cmd", {
@@ -555,7 +553,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
       });
       if (!launch.success) throw new Error(launch.message || "");
     } catch (e) {
-      alert(`?{e}`);
+      alert(`打开安装包失败：${e}`);
     } finally {
       setBusy(false);
     }
@@ -726,11 +724,11 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
       setSteps(nextSteps);
       setSelectedId(nextSteps[0]?.id ?? null);
       setDraft(nextSteps[0] ? stepToDraft(nextSteps[0]) : DEFAULT_STEP_DRAFT);
-      setFeedback(`?{template.name});
+      setFeedback(`已保存模板「${template.name}」`);
       setPreviewImage("");
       setPreviewResult(null);
     } catch (e) {
-      setFeedback(`? ${e}`);
+      setFeedback(`操作失败: ${e}`);
     } finally {
       setBusy(false);
     }
@@ -748,11 +746,11 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
       setSelectedId(next[0]?.id ?? null);
       setDraft(next[0] ? stepToDraft(next[0]) : DEFAULT_STEP_DRAFT);
       setLog([]);
-      setFeedback(template ? `?{template.name} : "");
+      setFeedback(template ? `已切换到模板「${template.name}」` : "已切换模板");
       setPreviewImage("");
       setPreviewResult(null);
     } catch (e) {
-      setFeedback(`? ${e}`);
+      setFeedback(`操作失败: ${e}`);
     } finally {
       setBusy(false);
     }
@@ -761,7 +759,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
   async function deleteActiveTemplate() {
     if (!activeTemplateId || running || templates.length <= 1) return;
     const name = activeTemplate?.name ?? "";
-    if (!window.confirm(`?{name})) return;
+    if (!window.confirm(`确定删除模板「${name}」？`)) return;
     setBusy(true);
     try {
       const nextTemplates = await invoke<AutomationTemplate[]>("delete_automation_template_cmd", { templateId: activeTemplateId });
@@ -774,11 +772,11 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
       setSteps(next);
       setSelectedId(next[0]?.id ?? null);
       setDraft(next[0] ? stepToDraft(next[0]) : DEFAULT_STEP_DRAFT);
-      setFeedback(`?{name});
+      setFeedback(`已删除模板「${name}」`);
       setPreviewImage("");
       setPreviewResult(null);
     } catch (e) {
-      setFeedback(`? ${e}`);
+      setFeedback(`操作失败: ${e}`);
     } finally {
       setBusy(false);
     }
@@ -795,12 +793,12 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
   function addStep() {
     const step = draftFromStep({
       id: `step-${Date.now()}`,
-      name: `?${steps.length + 1}`,
+      name: `新步骤 ${steps.length + 1}`,
     });
     const next = [...steps, step];
     void persistSteps(next);
     selectStep(step);
-    setFeedback(`?{step.name});
+    setFeedback(`已添加「${step.name}」`);
   }
 
   async function restartAsAdmin() {
@@ -808,7 +806,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
     try {
       await invoke("restart_as_admin_cmd");
     } catch (e) {
-      setFeedback(`? ${e}`);
+      setFeedback(`操作失败: ${e}`);
     }
   }
 
@@ -980,8 +978,8 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
       const elapsed = Date.now() - stepStartedAtRef.current;
       setStepElapsedMs(elapsed);
       recordStepMeasured(step.id, elapsed);
-      setLog((prev) => [...prev, `??{step.name}?${formatDurationShort(elapsed)}`]);
-      setFeedback(`?{step.name}?${formatDurationShort(elapsed)}`);
+      setLog((prev) => [...prev, `计时完成「${step.name}」· ${formatDurationShort(elapsed)}`]);
+      setFeedback(`步骤「${step.name}」完成 · ${formatDurationShort(elapsed)}`);
     }
     endStepTimer();
     setAwaitingPhaseStep(null);
@@ -1003,7 +1001,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
     const needsMatch = draft.action !== "closeWindow" && draft.matchType !== "point";
     const needsPoint = draft.action !== "closeWindow" && draft.matchType === "point";
     if (!draft.name.trim() || (needsMatch && !draft.matchValue.trim()) || (needsPoint && !draft.matchValue.trim())) {
-      setFeedback(needsPoint ? "" : "");
+      setFeedback(needsPoint ? "请先用准星选择坐标" : "请填写步骤名称和匹配内容");
       return;
     }
     const next = steps.map((s) =>
@@ -1025,7 +1023,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
         : s
     );
     await persistSteps(next);
-    setFeedback(`?{draft.name.trim()});
+    setFeedback(`已保存「${draft.name.trim()}」`);
   }
 
   async function runLocator(dryRun: boolean) {
@@ -1085,7 +1083,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
         matchType: "color",
         matchValue: color.hex,
       }));
-      setFeedback(`?${color.hex} (${color.screen_x}, ${color.screen_y})`);
+      setFeedback(`已拾取 ${color.hex} (${color.screen_x}, ${color.screen_y})`);
     } catch (e) {
       setFeedback(String(e));
     } finally {
@@ -1115,7 +1113,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
       offsetX: 0,
       offsetY: 0,
     }));
-    setFeedback(pointValue ? `? ${pointValue}` : "");
+    setFeedback(pointValue ? `已选择准星坐标 ${pointValue}` : "请先预览并拖动准星选择坐标");
   }
 
   function useCurrentCrosshair() {
@@ -1125,15 +1123,15 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
       return;
     }
     setDraft((d) => ({ ...d, matchType: "point", matchValue: pointValue, offsetX: 0, offsetY: 0 }));
-    setFeedback(`?${pointValue}`);
+    setFeedback(`已选择准星坐标 ${pointValue}`);
   }
 
   async function closeTargetWindow(title: string) {
     setBusy(true);
-    setFeedback(`?{title || "WeGame"});
+    setFeedback(`正在关闭「${title || "WeGame"}」…`);
     try {
       const r = await invoke<VisualTargetResult>("close_target_window_cmd", { windowTitle: title || "WeGame" });
-      setFeedback(`${r.success ? "" : ""} ${r.message}`);
+      setFeedback(`${r.success ? "✓" : "✗"} ${r.message}`);
     } catch (e) {
       setFeedback(String(e));
     } finally {
@@ -1195,7 +1193,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
             }
           : r
       );
-      setFeedback(`?${pointValue}?(${screenX}, ${screenY})`);
+      setFeedback(`准星 ${pointValue} · 最终 (${screenX}, ${screenY})`);
       return;
     }
 
@@ -1260,11 +1258,11 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
   async function waitBeforeStep(step: AutomationStep, label?: string) {
     if (step.timeAfterStep || step.delayMs <= 0) return;
     const waitLabel = formatDelay(step.delayMs, delayUnitOf(step));
-    beginStepTimer(`??${step.name}`);
+    beginStepTimer(`等待 · ${step.name}`);
     if (label) {
-      setLog((prev) => [...prev, `${label} ?${waitLabel} ?{step.name}]);
+      setLog((prev) => [...prev, `${label} 等待 ${waitLabel} 后执行「${step.name}」`]);
     } else {
-      setFeedback(`?${waitLabel} ?{step.name});
+      setFeedback(`等待 ${waitLabel} 后执行「${step.name}」`);
     }
     await new Promise((resolve) => setTimeout(resolve, step.delayMs));
     endStepTimer();
@@ -1273,7 +1271,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
   async function runOneStep(step: AutomationStep) {
     const exec = stepForExecution(step);
     if (exec.action !== "closeWindow" && !exec.matchValue.trim()) {
-      setFeedback(exec.matchType === "point" ? "" : "");
+      setFeedback(exec.matchType === "point" ? "请先用准星选择坐标" : "请填写匹配文字或颜色");
       return;
     }
     setBusy(true);
@@ -1281,7 +1279,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
     try {
       await waitBeforeStep(exec);
       beginStepTimer(exec.name);
-      setFeedback(`?{exec.name});
+      setFeedback(`执行「${exec.name}」`);
       const stepStart = Date.now();
       const r = await invokeStepRun(exec);
       const pos = r.screen_x != null && r.screen_y != null ? ` (${r.screen_x}, ${r.screen_y})` : "";
@@ -1290,15 +1288,15 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
         beginStepTimer(exec.name);
         setAwaitingPhaseStep(exec);
         if (exec.delayMs > 0) {
-          setFeedback(`${r.success ? "" : ""} ${r.message}${pos} ??${formatDelay(exec.delayMs, delayUnitOf(exec))}`);
+          setFeedback(`${r.success ? "✓" : "✗"} ${r.message}${pos} · 等待 ${formatDelay(exec.delayMs, delayUnitOf(exec))}`);
           window.setTimeout(() => finishPhaseTimer(exec), exec.delayMs);
         } else {
-          setFeedback(`${r.success ? "" : ""} ${r.message}${pos} ?";
+          setFeedback(`${r.success ? "✓" : "✗"} ${r.message}${pos} · 计时中，完成后点「完成」`);
         }
       } else {
         endStepTimer();
         setRunningStepId(null);
-        setFeedback(`${r.success ? "" : ""} ${r.message}${pos} ?${took}`);
+        setFeedback(`${r.success ? "✓" : "✗"} ${r.message}${pos} · ${took}`);
       }
     } catch (e) {
       endStepTimer();
@@ -1320,7 +1318,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
     resetExecutionTimer();
     beginTotalTimer();
     setRunning(true);
-    setLog([`??(${runnableSteps.length}/${steps.length} ?`]);
+    setLog([`开始执行 (${runnableSteps.length}/${steps.length} 步)`]);
 
     for (let i = 0; i < runnableSteps.length; i++) {
       const { step: sourceStep, index: originalIndex } = runnableSteps[i];
@@ -1331,23 +1329,23 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
       try {
         await waitBeforeStep(step, `[${originalIndex + 1}]`);
         beginStepTimer(step.name);
-        setLog((prev) => [...prev, `[${i + 1}/${runnableSteps.length}] ?{step.name}]);
+        setLog((prev) => [...prev, `[${i + 1}/${runnableSteps.length}] 执行「${step.name}」`]);
         stepStart = Date.now();
         const r = await invokeStepRun(step);
         stepSucceeded = r.success;
         const pos = r.screen_x != null && r.screen_y != null ? ` (${r.screen_x}, ${r.screen_y})` : "";
         const took = formatDurationShort(Date.now() - stepStart);
-        const icon = r.success ? "" : "";
+        const icon = r.success ? "✓" : "✗";
         setLog((prev) => {
           const next = [...prev];
-          next[next.length - 1] = `[${i + 1}/${runnableSteps.length}] ${icon} ${step.name}${pos} ?${took} ?${r.message}`;
+          next[next.length - 1] = `[${i + 1}/${runnableSteps.length}] ${icon} ${step.name}${pos} · ${took} · ${r.message}`;
           return next;
         });
       } catch (e) {
         const took = formatDurationShort(Date.now() - stepStart);
         setLog((prev) => {
           const next = [...prev];
-          next[next.length - 1] = `[${i + 1}/${runnableSteps.length}] ?${step.name} ?${took} ?${e}`;
+          next[next.length - 1] = `[${i + 1}/${runnableSteps.length}] ✗ ${step.name} · ${took} · ${e}`;
           return next;
         });
         endStepTimer();
@@ -1363,8 +1361,8 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
         setLog((prev) => [
           ...prev,
           step.delayMs > 0
-            ? `[${i + 1}/${runnableSteps.length}] ??{step.name}?${waitLabel} ?
-            : `[${i + 1}/${runnableSteps.length}] ??{step.name}?
+            ? `[${i + 1}/${runnableSteps.length}] 计时中「${step.name}」· 等待 ${waitLabel} 后点「完成」`
+            : `[${i + 1}/${runnableSteps.length}] 计时中「${step.name}」· 从现在计时`
         ]);
         await new Promise<void>((resolve) => {
           let finished = false;
@@ -1397,7 +1395,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
     }
 
     setRunningStepId(null);
-    setLog((prev) => [...prev, "??]);
+    setLog((prev) => [...prev, "全部步骤执行完成"]);
     setRunning(false);
   }
 
@@ -1407,61 +1405,46 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
     <div className="page auto-page">
       <header className="page-head">
         <div>
-          <p className="page-kicker"> ??/p>
-          <h2>?/h2>
-          <p className="page-sub">/??????/p>
+          <p className="page-kicker">模拟点击 · 安装器自动化</p>
+          <h2>自动化</h2>
+          <p className="page-sub">定位文字/颜色/准星，按步骤模拟点击完成安装</p>
         </div>
       </header>
 
       <div className="automation-brief">
         <div className="brief-cell">
-          <span className="brief-label"></span>
-          <strong>{running ? "" : busy ? "" : ""}</strong>
+          <span className="brief-label">运行模式</span><strong>{running ? "执行中" : busy ? "调试中" : "待命"}</strong>
         </div>
         <div className="brief-cell">
-          <span className="brief-label"></span>
-          <strong>{runnableStepCount}/{steps.length}</strong>
+          <span className="brief-label">步骤数</span><strong>{runnableStepCount}//{steps.length}</strong>
+        </div>
+        <div className="brief-cell"><span className="brief-label">推荐路径</span><strong>模拟点击安装</strong>
         </div>
         <div className="brief-cell">
-          <span className="brief-label"></span>
-          <strong>?/strong>
-        </div>
-        <div className="brief-cell">
-          <span className="brief-label"></span>
-          <strong>{isElevated === null ? "" : isElevated ? "" : ""}</strong>
+          <span className="brief-label">权限</span><strong>{isElevated === null ? "检测中" : isElevated ? "管理员" : "普通"}</strong>
         </div>
         <div className={`brief-cell timer-cell${timerRunning ? " is-running" : ""}`}>
-          <span className="brief-label"></span>
-          <strong>{formatDuration(totalElapsedMs)}</strong>
+          <span className="brief-label">总计时</span><strong>{formatDuration(totalElapsedMs)}</strong>
         </div>
         <div className={`brief-cell timer-cell${phaseTimerActive ? " is-phase" : ""}${stepStartedAt !== null ? " is-running" : ""}`}>
-          <span className="brief-label">{stepTimerName || ""}</span>
+          <span className="brief-label">{stepTimerName || "环节计时"}</span>
           <strong>{stepStartedAt !== null ? formatDuration(stepElapsedMs) : stepElapsedMs > 0 ? formatDuration(stepElapsedMs) : ""}</strong>
         </div>
         {awaitingPhaseStep ? (
-          <button className="btn btn-sm btn-primary" type="button" onClick={completePhaseTimer}>
-            ?
-          </button>
+          <button className="btn btn-sm btn-primary" type="button" onClick={completePhaseTimer}>完成</button>
         ) : timerRunning ? (
-          <button className="btn btn-sm" type="button" onClick={stopExecutionTimer}>
-            
-          </button>
+          <button className="btn btn-sm" type="button" onClick={stopExecutionTimer}>停止计时</button>
         ) : (
-          <button className="btn btn-sm" type="button" onClick={resetExecutionTimer} disabled={totalElapsedMs === 0 && stepElapsedMs === 0}>
-            
-          </button>
+          <button className="btn btn-sm" type="button" onClick={resetExecutionTimer} disabled={totalElapsedMs === 0 && stepElapsedMs === 0}>清零计时</button>
         )}
         {isElevated === false && (
-          <button className="btn btn-sm btn-primary" type="button" onClick={() => void restartAsAdmin()} disabled={busy || running}>
-            ?          </button>
+          <button className="btn btn-sm btn-primary" type="button" onClick={() => void restartAsAdmin()} disabled={busy || running}>管理员重启</button>
         )}
       </div>
 
       <section className="auto-panel auto-template-panel">
         <div className="auto-template-grid">
-          <label className="auto-template-field">
-            <span></span>
-            <select
+          <label className="auto-template-field"><span>当前模板</span><select
               className="path-input"
               value={activeTemplateId}
               onChange={(e) => void switchTemplate(e.target.value)}
@@ -1474,23 +1457,15 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
               ))}
             </select>
           </label>
-          <label className="auto-template-field">
-            <span></span>
-            <input
-              className="path-input"
-              value={templateName}
+          <label className="auto-template-field"><span>模板名称</span><input className="path-input" value={templateName}
               onChange={(e) => setTemplateName(e.target.value)}
-              placeholder="Game ?
+              placeholder="例如：WeGame 标准安装"
               disabled={busy || running}
             />
           </label>
           <div className="auto-template-actions">
-            <button className="btn btn-sm btn-primary" type="button" onClick={() => void saveCurrentAsTemplate()} disabled={busy || running}>
-              
-            </button>
-            <button className="btn btn-sm btn-danger" type="button" onClick={() => void deleteActiveTemplate()} disabled={busy || running || templates.length <= 1}>
-              
-            </button>
+            <button className="btn btn-sm btn-primary" type="button" onClick={() => void saveCurrentAsTemplate()} disabled={busy || running}>保存模板</button>
+            <button className="btn btn-sm btn-danger" type="button" onClick={() => void deleteActiveTemplate()} disabled={busy || running || templates.length <= 1}>删除模板</button>
           </div>
         </div>
       </section>
@@ -1498,20 +1473,15 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
       {/* ?*/}
       <section className="auto-panel auto-panel-main">
         <div className="auto-panel-head">
-          <h3>?/h3>
+          <h3>步骤</h3>
           <div className="auto-panel-actions">
-            <button className="btn btn-sm btn-ghost" type="button" onClick={openWeGameInstaller} disabled={busy || running}>
-              ?WeGame ?            </button>
-            <button className="btn btn-sm btn-primary" type="button" onClick={addStep} disabled={busy || running}>
-              + ?
-            </button>
+            <button className="btn btn-sm btn-ghost" type="button" onClick={openWeGameInstaller} disabled={busy || running}>打开 WeGame 安装包</button>
+            <button className="btn btn-sm btn-primary" type="button" onClick={addStep} disabled={busy || running}>+ 添加步骤</button>
             <button
               className="btn btn-sm btn-primary"
               type="button"
               onClick={() => void runAll()}
-              disabled={busy || running || runnableStepCount === 0}
-            >
-              ?runnableStepCount ? ` (${runnableStepCount})` : ""}
+              disabled={busy || running || runnableStepCount === 0}>执行全部{runnableStepCount ? ` (${runnableStepCount})` : ""}
             </button>
           </div>
         </div>
@@ -1521,15 +1491,12 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
             <table className={`auto-table${isDragActive ? " is-reordering" : ""}`}>
             <thead>
               <tr>
-                <th className="chain-col-drag" aria-label="? />
-                <th className="chain-col-run">?/th>
-                <th className="chain-col-time">?/th>
-                <th className="chain-col-num">#</th>
-                <th></th>
-                <th>?/th>
-                <th>?/th>
-                <th className="chain-col-delay">?/th>
-                <th className="chain-col-actions">?/th>
+                <th className="chain-col-drag" aria-label="按住拖动排序" />
+                <th className="chain-col-run">运行</th>
+                <th className="chain-col-time">计时</th>
+                <th className="chain-col-num">#</th><th>名称</th><th>类型</th><th>匹配</th>
+                <th className="chain-col-delay">触发前等待</th>
+                <th className="chain-col-actions">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -1552,12 +1519,12 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                     onClick={(e) => e.stopPropagation()}
                     onPointerDown={(e) => beginStepDrag(e, idx)}
                   >
-                    <span className="step-drag-handle" title="?>
-                      ?
+                    <span className="step-drag-handle" title="按住拖动排序">
+                      拖动
                     </span>
                   </td>
                   <td className="chain-col-run" onClick={(e) => e.stopPropagation()}>
-                    <label className="step-run-toggle" title="?>
+                    <label className="step-run-toggle" title="关闭后，执行全部会跳过这一行">
                       <input
                         type="checkbox"
                         checked={step.enabled !== false}
@@ -1572,9 +1539,9 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                       className={`step-timed-toggle${step.timeAfterStep ? " is-on" : ""}`}
                       onClick={() => setStepTimeAfter(step.id, !step.timeAfterStep)}
                       disabled={running || step.enabled === false}
-                      title="?
+                      title="开启后，本步从开始执行到点「完成」单独计时"
                     >
-                      ?
+                      计时
                     </button>
                     {runningStepId === step.id && stepStartedAt !== null ? (
                       <span className="step-timed-live">{formatDuration(stepElapsedMs)}</span>
@@ -1609,9 +1576,9 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                     </label>
                   </td>
                   <td className="auto-rule-actions chain-col-actions" onClick={(e) => e.stopPropagation()}>
-                    <button type="button" className="btn-link" onClick={() => selectStep(step)} disabled={running}>?/button>
-                    <button type="button" className="btn-link" onClick={() => void runOneStep(step)} disabled={busy || running}></button>
-                    <button type="button" className="btn-link btn-link-danger" onClick={() => void removeStep(step.id)} disabled={running}>?/button>
+                    <button type="button" className="btn-link" onClick={() => selectStep(step)} disabled={running}>编辑</button>
+                    <button type="button" className="btn-link" onClick={() => void runOneStep(step)} disabled={busy || running}>执行</button>
+                    <button type="button" className="btn-link btn-link-danger" onClick={() => void removeStep(step.id)} disabled={running}>删</button>
                   </td>
                 </tr>
                 );
@@ -1640,18 +1607,15 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
           </div>
         ) : (
           <div className="empty-architecture">
-            <strong></strong>
-            <span></span>
-            <button className="btn btn-sm btn-primary" type="button" onClick={addStep} disabled={busy || running}>
-              + ?
-            </button>
+            <strong>还没有自动化链路</strong><span>添加步骤后点「保存模板」，以后就可以在上方切换使用。</span>
+            <button className="btn btn-sm btn-primary" type="button" onClick={addStep} disabled={busy || running}>+ 添加步骤</button>
           </div>
         )}
 
         {log.length > 0 && (
           <div className="chain-log">
             {log.map((entry, i) => (
-              <div key={i} className={`chain-log-entry${entry.includes("") ? " is-error" : entry.includes("") ? " is-ok" : ""}`}>{entry}</div>
+              <div key={i} className={`chain-log-entry${entry.includes("✗") ? " is-error" : entry.includes("✓") ? " is-ok" : ""}`}>{entry}</div>
             ))}
           </div>
         )}
@@ -1659,18 +1623,17 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
 
       {/* ?*/}
       <section className="auto-panel auto-panel-locator">
-        <h3>
-          ?          <span className="auto-panel-sub">{selected ? ` ?${selected.name}` : ""}</span>
+        <h3>定位器<span className="auto-panel-sub">{selected ? ` · 单次调试：${selected.name}` : ""}</span>
         </h3>
 
         {!selected ? (
-          <p className="auto-empty auto-empty-dim">?/p>
+          <p className="auto-empty auto-empty-dim">选中上方某个步骤，或先添加步骤，再在这里试匹配和点击。</p>
         ) : (
           <>
             <div className="auto-form-row">
               <input
                 className="auto-input auto-input-sm"
-                placeholder="?
+                placeholder="步骤名称"
                 value={draft.name}
                 onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
                 spellCheck={false}
@@ -1684,7 +1647,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                 onClick={() => setDraft((d) => ({ ...d, action: "click", click: true }))}
                 disabled={busy || running}
               >
-                ?
+                左键点击
               </button>
               <button
                 type="button"
@@ -1692,7 +1655,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                 onClick={() => setDraft((d) => ({ ...d, action: "inputText", click: true }))}
                 disabled={busy || running}
               >
-                
+                输入路径
               </button>
               <button
                 type="button"
@@ -1700,9 +1663,9 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                 onClick={() => setDraft((d) => ({ ...d, action: "closeWindow", click: false }))}
                 disabled={busy || running}
               >
-                ?
+                关闭窗口
               </button>
-              <span className="auto-offset-hint"></span>
+              <span className="auto-offset-hint">输入路径会先点中目标；关闭窗口会先正常关闭，失败再强制结束。</span>
             </div>
             {draft.action !== "closeWindow" && (
             <>
@@ -1713,7 +1676,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                 onClick={() => setDraft((d) => ({ ...d, matchType: "text" }))}
                 disabled={busy || running}
               >
-                ?
+                文字
               </button>
               <button
                 type="button"
@@ -1721,7 +1684,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                 onClick={() => setDraft((d) => ({ ...d, matchType: "color" }))}
                 disabled={busy || running}
               >
-                ?
+                颜色
               </button>
               <button
                 type="button"
@@ -1729,7 +1692,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                 onClick={choosePointMode}
                 disabled={busy || running}
               >
-                ?
+                准星
               </button>
               <button
                 type="button"
@@ -1737,10 +1700,11 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                 onClick={useCurrentCrosshair}
                 disabled={busy || running || !previewResult}
               >
-                ?              </button>
+                取当前准星
+              </button>
               <input
                 className="auto-input auto-input-grow"
-                placeholder={draft.matchType === "point" ? "" : draft.matchType === "text" ? "" : "#RRGGBB"}
+                placeholder={draft.matchType === "point" ? "点预览后拖动准星" : draft.matchType === "text" ? "匹配文字" : "#RRGGBB"}
                 value={draft.matchValue}
                 onChange={(e) => setDraft((d) => ({ ...d, matchValue: e.target.value }))}
                 spellCheck={false}
@@ -1753,13 +1717,13 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                   onChange={(e) => setDraft((d) => ({ ...d, click: e.target.checked }))}
                   disabled={busy || running}
                 />
-                
+                点击
               </label>
             </div>
             {draft.matchType !== "point" ? (
             <div className="auto-form-row">
               <label className="auto-offset-label">
-                 X
+                偏移 X
                 <input
                   type="number"
                   className="chain-delay-input"
@@ -1770,7 +1734,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                 />
               </label>
               <label className="auto-offset-label">
-                 Y
+                偏移 Y
                 <input
                   type="number"
                   className="chain-delay-input"
@@ -1780,7 +1744,7 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                   disabled={busy || running}
                 />
               </label>
-              <span className="auto-offset-hint">?</span>
+              <span className="auto-offset-hint">相对识别中心点，单位像素；也可以直接拖动预览准星。</span>
             </div>
             ) : (
               <div className="auto-form-row">
@@ -1797,10 +1761,10 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                   disabled={busy || running}
                 />
                 <button className="btn btn-sm" type="button" onClick={() => void pickColorFromMouse()} disabled={busy || running}>
-                  
+                  鼠标拾色
                 </button>
                 <label className="auto-tolerance">
-                  " "}
+                  容差
                   <input
                     type="number"
                     min={1}
@@ -1819,23 +1783,14 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                 <label className="auto-check-label">
                   <input
                     type="radio"
-                    checked={draft.inputMode === "installBase"}
-                    onChange={() => setDraft((d) => ({ ...d, inputMode: "installBase" }))}
-                    disabled={busy || running}
-                  />
-                  ?                </label>
+                    checked={draft.inputMode === "installBase"} onChange={() => setDraft((d) => ({ ...d, inputMode: "installBase" }))} disabled={busy || running} />使用设置页安装目录</label>
                 <label className="auto-check-label">
                   <input
                     type="radio"
-                    checked={draft.inputMode === "custom"}
-                    onChange={() => setDraft((d) => ({ ...d, inputMode: "custom" }))}
-                    disabled={busy || running}
-                  />
-                  
-                </label>
+                    checked={draft.inputMode === "custom"} onChange={() => setDraft((d) => ({ ...d, inputMode: "custom" }))} disabled={busy || running} />手动路径</label>
                 <input
                   className="auto-input auto-input-grow"
-                  placeholder="?D:\\Games\\WeGame"
+                  placeholder="例如 D:\\Games\\WeGame"
                   value={draft.inputText}
                   onChange={(e) => setDraft((d) => ({ ...d, inputText: e.target.value }))}
                   spellCheck={false}
@@ -1846,46 +1801,36 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
             <div className="auto-form-row">
               <input
                 className="auto-input auto-input-window"
-                placeholder=""
-                value={draft.windowTitle}
+                placeholder="窗口标题" value={draft.windowTitle}
                 onChange={(e) => setDraft((d) => ({ ...d, windowTitle: e.target.value }))}
                 spellCheck={false}
                 disabled={busy || running}
               />
-              <button className="btn btn-sm" type="button" onClick={() => void runLocator(true)} disabled={busy || running}>
-                
-              </button>
-              <button className="btn btn-sm" type="button" onClick={() => void runLocator(false)} disabled={busy || running}>
-                ?              </button>
+              <button className="btn btn-sm" type="button" onClick={() => void runLocator(true)} disabled={busy || running}>预览坐标</button>
+              <button className="btn btn-sm" type="button" onClick={() => void runLocator(false)} disabled={busy || running}>执行一次</button>
               <button
                 className="btn btn-sm"
                 type="button"
-                onClick={() => void closeTargetWindow(draft.windowTitle.trim() || "WeGame")}
-                disabled={busy || running}
-              >
-                
-              </button>
-              <button className="btn btn-sm btn-primary" type="button" onClick={() => void saveDraftToStep()} disabled={busy || running}>
-                ?
-              </button>
+                onClick={() => void closeTargetWindow(draft.windowTitle.trim() || "WeGame")} disabled={busy || running}>关闭目标</button>
+              <button className="btn btn-sm btn-primary" type="button" onClick={() => void saveDraftToStep()} disabled={busy || running}>保存</button>
             </div>
             {feedback && <p className="auto-feedback">{feedback}</p>}
             {previewResult && (
               <div className="auto-coordinates">
                 <div>
-                  <span>{draft.matchType === "point" ? "" : draft.matchType === "color" ? "" : "?OCR"}</span>
+                  <span>{draft.matchType === "point" ? "准星坐标" : draft.matchType === "color" ? "原始颜色" : "原始 OCR"}</span>
                   <strong>
                     {previewResult.raw_screen_x ?? ""}, {previewResult.raw_screen_y ?? ""}
                   </strong>
                 </div>
                 <div>
-                  <span></span>
+                  <span>偏移</span>
                   <strong>
                     {previewResult.offset_x ?? 0}, {previewResult.offset_y ?? 0}
                   </strong>
                 </div>
                 <div>
-                  <span></span>
+                  <span>最终坐标</span>
                   <strong>
                     {previewResult.screen_x ?? ""}, {previewResult.screen_y ?? ""}
                   </strong>
@@ -1895,8 +1840,8 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
             {previewImage && (
               <div className="auto-preview">
                 <div className="auto-preview-head">
-                  <strong></strong>
-                  <span></span>
+                  <strong>截图预览</strong>
+                  <span>拖动准星校准最终坐标</span>
                 </div>
                 <div
                   className="auto-preview-stage"
@@ -1908,9 +1853,9 @@ function AutomationPage({ software }: { software: SoftwareInfo[] }) {
                     if (e.buttons === 1) updatePreviewPoint(e);
                   }}
                 >
-                  <img src={previewImage} alt="OCR ? draggable={false} />
+                  <img src={previewImage} alt="OCR 预览" draggable={false} />
                   {markerStyle && (
-                    <span className="auto-preview-crosshair" style={markerStyle} aria-label="?>
+                    <span className="auto-preview-crosshair" style={markerStyle} aria-label="准星">
                       <span />
                     </span>
                   )}
@@ -1933,8 +1878,6 @@ function App() {
   const [software, setSoftware] = useState<SoftwareInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [showAddCustom, setShowAddCustom] = useState(false);
-  const [customForm, setCustomForm] = useState({ id: "", display_name: "", repo: "", asset_match: "", exe_match: "" });
   const [status, setStatus] = useState<Record<string, InstallStatus>>({});
   const [installed, setInstalled] = useState<Record<string, boolean>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -1955,11 +1898,11 @@ function App() {
   const officialLibraryItems = selectable.filter((sw) => softwareSourceKind(sw) === "official");
   const portableItems = selectable.filter((sw) => sw.install_kind === "portable");
   const installerItems = software.filter((sw) => sw.install_kind === "installer" && sw.portable);
-  const failedItems = software.filter((sw) => sw.latest_version.startsWith(""));
+  const failedItems = software.filter((sw) => sw.latest_version.startsWith("查询失败"));
   const cachedItems = software.filter((sw) => packageCache[sw.id]?.cached);
   const cachedBytes = cachedItems.reduce((sum, sw) => sum + (packageCache[sw.id]?.size || sw.portable?.size || 0), 0);
   const notInstalledCount = selectable.filter((sw) => !installed[sw.id]).length;
-  const sourceHealth = failedItems.length ? `${failedItems.length} ` : loading ? "" : software.length ? "" : "";
+  const sourceHealth = failedItems.length ? `${failedItems.length} 个源异常` : loading ? "同步中" : software.length ? "正常" : "待检测";
   const isCustomPath =
     pathSettings && pathSettings.current_base.replace(/\\+$/, "") !== pathSettings.default_base.replace(/\\+$/, "");
 
@@ -1983,7 +1926,7 @@ function App() {
   const selectedInstallableItems = installableIds
     .map((id) => software.find((s) => s.id === id))
     .filter((sw): sw is SoftwareInfo => !!sw && sw.install_kind === "portable");
-  const primaryActionLabel = "";
+  const primaryActionLabel = "安装";
 
   const uninstallableItems = [...selected]
     .map((id) => software.find((s) => s.id === id))
@@ -2037,7 +1980,7 @@ function App() {
     setStatus((prev) => {
       const next = { ...prev };
       for (const sw of targets) {
-        next[sw.id] = { state: "checking", percent: 30, message: "" };
+        next[sw.id] = { state: "checking", percent: 30, message: "卸载中…" };
       }
       return next;
     });
@@ -2062,7 +2005,7 @@ function App() {
           next[sw.id] = {
             state: "done",
             percent: 100,
-            message: ok ? "" : "",
+            message: ok ? "已安装" : "未安装",
           };
         }
         return next;
@@ -2124,37 +2067,6 @@ function App() {
     setNav("library");
   }
 
-  async function submitCustomSoftware(e: React.FormEvent) {
-    e.preventDefault();
-    if (!customForm.id || !customForm.display_name || !customForm.repo) return;
-    try {
-      setLoading(true);
-      await invoke("add_custom_software", { config: customForm });
-      setShowAddCustom(false);
-      setCustomForm({ id: "", display_name: "", repo: "", asset_match: "", exe_match: "" });
-      const list = await invoke<SoftwareInfo[]>("fetch_all_software");
-      setSoftware(list);
-      await refreshInstalled(list);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function removeCustomSoftware(id: string) {
-    if (!window.confirm(`?${id} )) return;
-    try {
-      setLoading(true);
-      await invoke("remove_custom_software", { id });
-      const list = await invoke<SoftwareInfo[]>("fetch_all_software");
-      setSoftware(list);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
-    }
-  }
 
   function closeLibraryDetail() {
     setLibraryDetailId(null);
@@ -2165,17 +2077,13 @@ function App() {
   async function openCachedPackage(sw: SoftwareInfo) {
     const info = packageCache[sw.id];
     if (!info?.cached || !info.path) {
-      setStatus((prev) => ({ ...prev, [sw.id]: { state: "error", percent: 0, message: "" } }));
+      setStatus((prev) => ({ ...prev, [sw.id]: { state: "error", percent: 0, message: "卸载中…" } }));
       return;
     }
     try {
-      if (sw.id === "winget") {
-        setStatus((prev) => ({ ...prev, [sw.id]: { state: "installing", percent: 50, message: "?.." } }));
-        await invoke("winget_cli_install_cmd", { path: info.path });
-        setStatus((prev) => ({ ...prev, [sw.id]: { state: "done", percent: 100, message: "Winget " } }));
-      } else {
+      {
         await invoke("open_cached_package_cmd", { path: info.path });
-        setStatus((prev) => ({ ...prev, [sw.id]: { state: "done", percent: 100, message: "" } }));
+        setStatus((prev) => ({ ...prev, [sw.id]: { state: "done", percent: 100, message: "卸载中…" } }));
       }
     } catch (e) {
       setStatus((prev) => ({ ...prev, [sw.id]: { state: "error", percent: 0, message: String(e) } }));
@@ -2191,13 +2099,9 @@ function App() {
       expectedSize: sw.portable.size,
     });
     if (!info.cached || !info.path) {
-      throw new Error("");
+      throw new Error("安装包缓存不存在，请重新下载");
     }
-    if (sw.id === "winget") {
-      setStatus((prev) => ({ ...prev, [sw.id]: { state: "installing", percent: 50, message: "?.." } }));
-      await invoke("winget_cli_install_cmd", { path: info.path });
-      setStatus((prev) => ({ ...prev, [sw.id]: { state: "done", percent: 100, message: "Winget " } }));
-    } else {
+    {
       await invoke("open_cached_package_cmd", { path: info.path });
     }
     await refreshPackageCache([sw], false);
@@ -2207,14 +2111,14 @@ function App() {
     const dir = `${installBasePath}\\${sw.id}`;
     try {
       await navigator.clipboard.writeText(dir);
-      setStatus((prev) => ({ ...prev, [sw.id]: { state: "done", percent: 100, message: `? ${dir}` } }));
+      setStatus((prev) => ({ ...prev, [sw.id]: { state: "done", percent: 100, message: `已复制路径 ${dir}` } }));
     } catch (e) {
       setStatus((prev) => ({ ...prev, [sw.id]: { state: "error", percent: 0, message: String(e) } }));
     }
   }
 
   async function uninstallInstaller(sw: SoftwareInfo) {
-    const ok = window.confirm(` ${sw.display_name} );
+    const ok = window.confirm(`确定启动 ${sw.display_name} 卸载程序？`);
     if (!ok) return;
     await uninstallOne(sw);
   }
@@ -2241,7 +2145,7 @@ function App() {
   }
 
   async function pickFolder() {
-    const picked = await open({ directory: true, multiple: false, title: "" });
+    const picked = await open({ directory: true, multiple: false, title: "选择安装根目录" });
     if (typeof picked === "string") setPathInput(picked);
   }
 
@@ -2249,7 +2153,7 @@ function App() {
     if (!sw.portable) return;
     const id = sw.id;
     const cached = packageCache[id]?.cached;
-    setStatus((prev) => ({ ...prev, [id]: { state: "downloading", percent: cached ? 100 : 0, message: cached ? "..." : "?.." } }));
+    setStatus((prev) => ({ ...prev, [id]: { state: "downloading", percent: cached ? 100 : 0, message: cached ? "使用缓存" : "下载中…" } }));
     try {
       await invoke<{ message: string }>("install_software", {
         id, url: sw.portable.browser_download_url, fileName: sw.portable.name, version: sw.latest_version, expectedSize: sw.portable.size,
@@ -2265,7 +2169,7 @@ function App() {
     if (!sw.portable) return;
     const id = sw.id;
     const cached = packageCache[id]?.cached;
-    setStatus((prev) => ({ ...prev, [id]: { state: "downloading", percent: cached ? 100 : 0, message: cached ? "..." : "?.." } }));
+    setStatus((prev) => ({ ...prev, [id]: { state: "downloading", percent: cached ? 100 : 0, message: cached ? "使用缓存" : "下载中…" } }));
     try {
       const result = await invoke<{ message: string }>("cache_software_package", {
         id, url: sw.portable.browser_download_url, fileName: sw.portable.name, version: sw.latest_version, expectedSize: sw.portable.size,
@@ -2280,7 +2184,7 @@ function App() {
 
   async function uninstallOne(sw: SoftwareInfo) {
     const id = sw.id;
-    setStatus((prev) => ({ ...prev, [id]: { state: "uninstalling", percent: 0, message: "" } }));
+    setStatus((prev) => ({ ...prev, [id]: { state: "uninstalling", percent: 0, message: "卸载中…" } }));
     try {
       await invoke<{ message: string }>("uninstall_software", { id });
       await detectInstalledNow([sw]);
@@ -2300,7 +2204,7 @@ function App() {
   async function batchUninstall() {
     if (!uninstallableItems.length) return;
     const ok = window.confirm(
-      ` ${uninstallableItems.length} \n\n?\n${uninstallableItems.map((sw) => `?${sw.display_name}`).join("\n")}`
+      `确定卸载 ${uninstallableItems.length} 个软件？\n\n将删除安装目录和桌面快捷方式\n${uninstallableItems.map((sw) => `· ${sw.display_name}`).join("\n")}`
     );
     if (!ok) return;
     setBatchBusy(true);
@@ -2323,18 +2227,18 @@ function App() {
     if (st?.state === "installing") return { label: st.message, kind: "busy" };
     if (st?.state === "uninstalling") return { label: st.message, kind: "busy" };
     if (st?.state === "checking") return { label: st.message, kind: "busy" };
-    if (st?.state === "uninstall_failed") return { label: "", kind: "uninstall-failed" };
-    if (st?.state === "error") return { label: st.message || "", kind: "error" };
+    if (st?.state === "uninstall_failed") return { label: "卸载失败", kind: "uninstall-failed" };
+    if (st?.state === "error") return { label: st.message || "安装失败", kind: "error" };
     if (st?.state === "done") return { label: st.message, kind: "ok" };
     if (sw.install_kind === "installer") {
-      if (installed[sw.id]) return { label: "", kind: "installed" };
-      if (packageCache[sw.id]?.cached) return { label: "", kind: "cached" };
-      return { label: "", kind: "idle" };
+      if (installed[sw.id]) return { label: "已安装", kind: "installed" };
+      if (packageCache[sw.id]?.cached) return { label: "已缓存", kind: "cached" };
+      return { label: "未下载", kind: "idle" };
     }
-    if (installed[sw.id]) return { label: "", kind: "installed" };
-    if (!sw.portable) return { label: sw.latest_version.startsWith("") ? "" : "", kind: "warn" };
-    if (packageCache[sw.id]?.cached) return { label: "", kind: "cached" };
-    return { label: "", kind: "idle" };
+    if (installed[sw.id]) return { label: "已安装", kind: "installed" };
+    if (!sw.portable) return { label: sw.latest_version.startsWith("查询失败") ? "检测失败" : "无便携版", kind: "warn" };
+    if (packageCache[sw.id]?.cached) return { label: "已缓存", kind: "cached" };
+    return { label: "未安装", kind: "idle" };
   }
 
   useEffect(() => {
@@ -2350,10 +2254,10 @@ function App() {
 
   /*  NAV items  */
   const NAV: { id: NavId; label: string; icon: NavId; badge?: string }[] = [
-    { id: "library", label: "", icon: "library" },
-    { id: "packages", label: "", icon: "packages" },
-    { id: "automation", label: "", icon: "automation" },
-    { id: "settings", label: "", icon: "settings" },
+    { id: "library", label: "软件库", icon: "library" },
+    { id: "packages", label: "安装包", icon: "packages" },
+    { id: "automation", label: "自动化", icon: "automation" },
+    { id: "settings", label: "设置", icon: "settings" },
   ];
 
   /*  page renderers  */
@@ -2363,20 +2267,17 @@ function App() {
     const isBusy = isItemBusy(sw.id);
     const isInstalled = installed[sw.id];
     const canInstallGithub = sw.install_kind === "portable" && !!sw.portable;
-    const isCustom = !["stranslate", "quickclipboard", "leagueakari", "wegame", "amd-adrenalin", "winget"].includes(sw.id);
+    
 
     const detailBtn = (
-      <>
-        {isCustom && <button className="btn btn-sm btn-link" type="button" onClick={() => void removeCustomSoftware(sw.id)} disabled={isBusy}>?/button>}
-        <button
-          className={`btn btn-sm btn-ghost library-action-detail${mode === "detail" ? " is-current" : ""}`}
-          type="button"
-          disabled={mode === "detail"}
-          onClick={mode === "list" ? () => openLibraryDetail(sw.id) : undefined}
-        >
-          ?
-        </button>
-      </>
+      <button
+        className={`btn btn-sm btn-ghost library-action-detail${mode === "detail" ? " is-current" : ""}`}
+        type="button"
+        disabled={mode === "detail"}
+        onClick={mode === "list" ? () => openLibraryDetail(sw.id) : undefined}
+      >
+        详情
+      </button>
     );
 
     let installBtn;
@@ -2388,7 +2289,7 @@ function App() {
           disabled={isBusy || batchBusy}
           onClick={() => void (isOfficial ? uninstallInstaller(sw) : uninstallOne(sw))}
         >
-          ?
+          卸载
         </button>
       );
     } else if (isOfficial) {
@@ -2399,7 +2300,7 @@ function App() {
           disabled={isBusy}
           onClick={() => void installOfficialSoftware(sw)}
         >
-          ?
+          安装
         </button>
       );
     } else if (canInstallGithub) {
@@ -2410,13 +2311,13 @@ function App() {
           disabled={isBusy || batchBusy}
           onClick={() => void installOne(sw)}
         >
-          ?
+          安装
         </button>
       );
     } else {
       installBtn = (
         <button className="btn btn-sm btn-primary library-action-install" type="button" disabled>
-          ?
+          安装
         </button>
       );
     }
@@ -2439,7 +2340,7 @@ function App() {
           <div className="row-text">
             <span className="row-title" title={sw.display_name}>{sw.display_name}</span>
             <span className="row-sub" title={sw.portable?.name ?? softwareKindLabel(sw)}>
-              {softwareKindLabel(sw)}{sw.portable?.name ? ` ?${sw.portable.name}` : ""}
+              {softwareKindLabel(sw)}{sw.portable?.name ? ` · ${sw.portable.name}` : ""}
             </span>
           </div>
         </div>
@@ -2467,19 +2368,19 @@ function App() {
     return (
       <div className={`page page-stack library-detail-page ${theme}`}>
         <button className="btn btn-sm btn-ghost library-detail-back" type="button" onClick={closeLibraryDetail}>
-          ??
+          返回列表
         </button>
 
         <div className="library-detail-table">
           <div className="list-header list-header-library">
             <span className="col-check" />
-            <span className="col-name"></span>
-            <span className="col-source"></span>
-            <span className="col-ver"></span>
-            <span className="col-date"></span>
-            <span className="col-size"></span>
-            <span className="col-status"></span>
-            <span className="col-actions"></span>
+            <span className="col-name">软件</span>
+            <span className="col-source">来源</span>
+            <span className="col-ver">版本</span>
+            <span className="col-date">发布</span>
+            <span className="col-size">大小</span>
+            <span className="col-status">状态</span>
+            <span className="col-actions">操作</span>
           </div>
           <div className={`list-row list-row-library library-detail-summary-row ${theme}${installed[sw.id] ? " row-installed" : ""}${isBusy ? " row-busy" : ""}`}>
             <span className="col-check" aria-hidden="true" />
@@ -2496,32 +2397,32 @@ function App() {
         )}
 
         <section className="library-detail-panel">
-          <h3></h3>
+          <h3>详细信息</h3>
           <div className="library-detail-grid">
             <div>
-              <span></span>
-              <code>{sw.portable?.name || ""}</code>
+              <span>安装包</span>
+              <code>{sw.portable?.name || "—"}</code>
             </div>
             <div>
-              <span></span>
-              <code>{softwareSourceLabel(sw)} ?{softwareKindLabel(sw)}</code>
+              <span>来源</span>
+              <code>{softwareSourceLabel(sw)} · {softwareKindLabel(sw)}</code>
             </div>
             <div>
-              <span>{isOfficial ? "" : ""}</span>
-              <code>{sw.release_url || ""}</code>
+              <span>{isOfficial ? "官网" : "发布页"}</span>
+              <code>{sw.release_url || "—"}</code>
             </div>
             <div>
-              <span></span>
+              <span>安装目录</span>
               <code>{paths?.install_dir || installDir}</code>
             </div>
             <div>
-              <span></span>
-              <code>{cacheInfo?.path || (cached ? "" : "")}</code>
+              <span>缓存路径</span>
+              <code>{cacheInfo?.path || (cached ? "已缓存" : "未缓存")}</code>
             </div>
             {isOfficial && (
               <div>
-                <span></span>
-                <code>?????/code>
+                <span>安装流程</span>
+                <code>官网源 · 缓存 → 检测安装 → 自动化/打开安装器</code>
               </div>
             )}
           </div>
@@ -2530,21 +2431,23 @@ function App() {
         {isOfficial ? (
           <div className="library-detail-actions">
             <button className="btn btn-sm" type="button" disabled={isBusy} onClick={() => void detectInstalledNow([sw])}>
-              ?            </button>
+              检测安装
+            </button>
             <button className="btn btn-sm" type="button" disabled={isBusy} onClick={() => void cacheOne(sw)}>
-              {cached ? "" : ""}
+              {cached ? "刷新缓存" : "下载并缓存"}
             </button>
             <button className="btn btn-sm" type="button" disabled={!cached || isBusy} onClick={() => void openCachedPackage(sw)}>
-              ?            </button>
+              打开安装包
+            </button>
             <button className="btn btn-sm" type="button" disabled={isBusy} onClick={() => void copyInstallDir(sw)}>
-              
+              复制安装路径
             </button>
             <button className="btn btn-sm btn-ghost" type="button" onClick={() => setNav("automation")}>
-              ?
+              编辑步骤
             </button>
             {sw.release_url && (
               <button className="btn btn-sm btn-ghost" type="button" onClick={() => void openUrl(sw.release_url)}>
-                ?
+                打开官网
               </button>
             )}
           </div>
@@ -2552,7 +2455,7 @@ function App() {
           sw.release_url && (
             <div className="library-detail-actions">
               <button className="btn btn-sm btn-ghost" type="button" onClick={() => void openUrl(sw.release_url)}>
-                ?GitHub Release
+                打开 GitHub Release
               </button>
             </div>
           )
@@ -2574,43 +2477,43 @@ function App() {
       <div className="page page-stack">
         <header className="page-head">
           <div>
-            <p className="page-kicker">GitHub ???/p>
-            <h2>?/h2>
+            <p className="page-kicker">便携版 · 官网安装包</p>
+            <h2>软件库</h2>
             <p className="page-sub">
-              {selectable.length} GitHub {githubLibraryItems.length} ??{officialLibraryItems.length}?{notInstalledCount} ??{loading ? "" : software.length ? "" : ""}
+              {selectable.length} 个可用（GitHub {githubLibraryItems.length} · 官网 {officialLibraryItems.length}）· {notInstalledCount} 个未安装 · {loading ? "同步中" : software.length ? "检测完成" : "未检测"}
             </p>
           </div>
-          <button className="btn btn-ghost btn-refresh" type="button" onClick={loadAll} disabled={loading || batchBusy} title="?>
+          <button className="btn btn-ghost btn-refresh" type="button" onClick={loadAll} disabled={loading || batchBusy} title="刷新">
             <span className={`refresh-icon${loading ? " is-spinning" : ""}`} aria-hidden="true"></span>
           </button>
         </header>
 
         <div className="insight-grid">
           <div className="insight-card">
-            <span></span>
+            <span>源健康</span>
             <strong>{sourceHealth}</strong>
           </div>
           <div className="insight-card">
-            <span>GitHub</span>
-            <strong>{githubLibraryItems.length} </strong>
+            <span>GitHub 便携版</span>
+            <strong>{githubLibraryItems.length} 个</strong>
           </div>
           <div className="insight-card">
-            <span></span>
-            <strong>{officialLibraryItems.length} </strong>
+            <span>官网安装包</span>
+            <strong>{officialLibraryItems.length} 个</strong>
           </div>
           <div className="insight-card">
-            <span></span>
+            <span>缓存体积</span>
             <strong>{formatSize(cachedBytes)}</strong>
           </div>
         </div>
 
-        <div className="library-filter-bar" role="tablist" aria-label="?>
+        <div className="library-filter-bar" role="tablist" aria-label="按来源筛选">
           <button
             type="button"
             className={`library-filter-chip${librarySourceFilter === "all" ? " is-active" : ""}`}
             onClick={() => setLibrarySourceFilter("all")}
           >
-            ?{selectable.length}
+            全部 {selectable.length}
           </button>
           <button
             type="button"
@@ -2624,42 +2527,40 @@ function App() {
             className={`library-filter-chip library-filter-official${librarySourceFilter === "official" ? " is-active" : ""}`}
             onClick={() => setLibrarySourceFilter("official")}
           >
-            ?{officialLibraryItems.length}
+            官网 {officialLibraryItems.length}
           </button>
         </div>
 
-        <p className="library-open-hint">GitHub ?/p>
+        <p className="library-open-hint">官网软件单击行进入详情；GitHub 便携版双击行进入详情，单击勾选后点「安装」。</p>
 
         <div className="action-bar">
           <span className={`sel-count${selected.size ? " sel-count-on" : ""}`}>
-            {selected.size ? `?${selected.size}` : ""}
+            {selected.size ? `已选 ${selected.size}` : "未选择"}
           </span>
-          <button className="btn btn-link" type="button" onClick={() => setSelected(new Set(libSelectable.map((s) => s.id)))} disabled={batchBusy || !libSelectable.length}>?GitHub</button>
-          <button className="btn btn-link" type="button" onClick={() => setSelected(new Set())} disabled={batchBusy || !selected.size}>?/button>
+          <button className="btn btn-link" type="button" onClick={() => setSelected(new Set(libSelectable.map((s) => s.id)))} disabled={batchBusy || !libSelectable.length}>全选 GitHub</button>
+          <button className="btn btn-link" type="button" onClick={() => setSelected(new Set())} disabled={batchBusy || !selected.size}>清空</button>
           {error && <span className="action-error">{error}</span>}
           <div className="action-spacer" />
-          <button className="btn" type="button" onClick={() => setShowAddCustom(true)}>?/button>
-          <button className="btn" type="button" onClick={() => void detectInstalledNow()} disabled={loading || batchBusy || !selectable.length}>
-            ?          </button>
+          <button className="btn" type="button" onClick={() => void detectInstalledNow()} disabled={loading || batchBusy || !selectable.length}>一键检测</button>
           <button className="btn btn-primary" type="button" onClick={batchInstall} disabled={batchBusy || !installableIds.length}>
             {primaryActionLabel}{installableIds.length ? ` (${installableIds.length})` : ""}
           </button>
           {uninstallableItems.length > 0 && (
             <button className="btn btn-danger" type="button" onClick={batchUninstall} disabled={batchBusy}>
-              ?({uninstallableItems.length})
+              卸载 ({uninstallableItems.length})
             </button>
           )}
         </div>
 
         <div className="list-header list-header-library">
           <span className="col-check" />
-          <span className="col-name"></span>
-          <span className="col-source"></span>
-          <span className="col-ver"></span>
-          <span className="col-date"></span>
-          <span className="col-size"></span>
-          <span className="col-status"></span>
-          <span className="col-actions"></span>
+          <span className="col-name">软件</span>
+          <span className="col-source">来源</span>
+          <span className="col-ver">版本</span>
+          <span className="col-date">发布</span>
+          <span className="col-size">大小</span>
+          <span className="col-status">状态</span>
+          <span className="col-actions">操作</span>
         </div>
 
         <div className="list-body">
@@ -2707,18 +2608,27 @@ function App() {
           })}
           {libraryItems.length === 0 && !loading && (
             <div className="source-empty">
-              <strong>{librarySourceFilter === "official" ? "" : librarySourceFilter === "github" ? "?GitHub " : failedItems.length ? "" : ""}</strong>
+              <strong>
+                {librarySourceFilter === "official"
+                  ? "暂无官网安装包"
+                  : librarySourceFilter === "github"
+                    ? "暂无 GitHub 便携版"
+                    : failedItems.length
+                      ? "软件源暂时不可用"
+                      : "暂无软件"}
+              </strong>
               <span>
                 {error ||
-                  failedItems.map((sw) => `${sw.display_name}: ${sw.latest_version}`).join("") ||
-                  ""}
+                  failedItems.map((sw) => `${sw.display_name}: ${sw.latest_version}`).join("； ") ||
+                  "请切换筛选或重新检测。"}
               </span>
               <div className="source-empty-actions">
                 <button className="btn btn-sm btn-primary" type="button" onClick={loadAll} disabled={loading}>
-                  ?                </button>
+                  刷新
+                </button>
                 {librarySourceFilter !== "all" && (
                   <button className="btn btn-sm" type="button" onClick={() => setLibrarySourceFilter("all")}>
-                    
+                    查看全部
                   </button>
                 )}
               </div>
@@ -2748,14 +2658,14 @@ function App() {
       fileName: sw.portable.name,
     };
 
-    setStatus((prev) => ({ ...prev, [id]: { state: "installing", percent: 45, message: "" } }));
+    setStatus((prev) => ({ ...prev, [id]: { state: "installing", percent: 45, message: "正在打开官方安装器" } }));
     const launch = await invoke<WeGameInstallResult>("launch_wegame_installer_cmd", invokeArgs);
-    if (!launch.success) throw new Error(launch.message || "");
-    setStatus((prev) => ({ ...prev, [id]: { state: "installing", percent: 55, message: `${launch.message} ?"} }));
+    if (!launch.success) throw new Error(launch.message || "启动失败");
+    setStatus((prev) => ({ ...prev, [id]: { state: "installing", percent: 55, message: `${launch.message} · 等待安装窗口` } }));
     await sleep(3500);
 
     const steps = await loadRunnableAutomationSteps();
-    if (!steps.length) throw new Error("?WeGame ");
+    if (!steps.length) throw new Error("没有可执行的自动化步骤，请先在自动化页配置 WeGame 步骤");
 
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
@@ -2766,7 +2676,7 @@ function App() {
           [id]: {
             state: "installing",
             percent: progress,
-            message: `?${formatDelay(step.delayMs, delayUnitOf(step))} ?{step.name},
+            message: `等待 ${formatDelay(step.delayMs, delayUnitOf(step))} 后执行「${step.name}」`,
           },
         }));
         await sleep(step.delayMs);
@@ -2777,11 +2687,11 @@ function App() {
         [id]: {
           state: "installing",
           percent: progress,
-          message: `?${i + 1}/${steps.length}: ${step.name}`,
+          message: `执行 ${i + 1}/${steps.length}: ${step.name}`,
         },
       }));
       const result = await invoke<VisualTargetResult>("run_automation_step_cmd", { stepId: step.id, dryRun: false });
-      if (!result.success) throw new Error(`?{step.name}? ${result.message}`);
+      if (!result.success) throw new Error(`步骤「${step.name}」失败: ${result.message}`);
 
       if (step.timeAfterStep && step.delayMs > 0) {
         setStatus((prev) => ({
@@ -2789,7 +2699,7 @@ function App() {
           [id]: {
             state: "installing",
             percent: Math.min(94, progress + 2),
-            message: `?{step.name}?${formatDelay(step.delayMs, delayUnitOf(step))},
+            message: `步骤「${step.name}」完成，等待 ${formatDelay(step.delayMs, delayUnitOf(step))}`,
           },
         }));
         await sleep(step.delayMs);
@@ -2801,7 +2711,7 @@ function App() {
       [id]: {
         state: "installing",
         percent: 95,
-        message: "",
+        message: "自动化已执行，正在检测安装结果",
       },
     }));
   }
@@ -2810,26 +2720,26 @@ function App() {
     if (!sw.portable || sw.install_kind !== "installer" || isItemBusy(sw.id)) return;
     const id = sw.id;
 
-    setStatus((prev) => ({ ...prev, [id]: { state: "installing", percent: 0, message: "" } }));
+    setStatus((prev) => ({ ...prev, [id]: { state: "installing", percent: 0, message: "准备安装" } }));
 
     try {
       if (!packageCache[id]?.cached) {
-        setStatus((prev) => ({ ...prev, [id]: { state: "downloading", percent: 0, message: "" } }));
+        setStatus((prev) => ({ ...prev, [id]: { state: "downloading", percent: 0, message: "下载安装包" } }));
         await cacheOne(sw);
         await refreshPackageCache([sw], false);
       }
 
       if (!sw.ocr_install) {
-        setStatus((prev) => ({ ...prev, [id]: { state: "installing", percent: 85, message: "" } }));
+        setStatus((prev) => ({ ...prev, [id]: { state: "installing", percent: 85, message: "正在打开官方安装器" } }));
         await openFreshCachedPackage(sw);
-        setStatus((prev) => ({ ...prev, [id]: { state: "done", percent: 100, message: "" } }));
+        setStatus((prev) => ({ ...prev, [id]: { state: "done", percent: 100, message: "已打开官方安装器，请按向导完成安装" } }));
         return;
       }
 
       await runInstallerAutomationFlow(sw);
       const detected = await waitForInstalledState(id);
       if (!detected) {
-        throw new Error("?WeGame ");
+        throw new Error("自动化已执行，但暂未检测到 WeGame 安装结果。可以稍后点刷新，或检查自动化最后一步是否过早关闭窗口。");
       }
       await detectInstalledNow([sw]);
     } catch (e) {
@@ -2844,30 +2754,29 @@ function App() {
       <div className="page page-stack">
         <header className="page-head">
           <div>
-            <p className="page-kicker">???/p>
-            <h2>?/h2>
-            <p className="page-sub">{pkgItems.length} ??{pkgItems.filter((sw) => packageCache[sw.id]?.cached).length} </p>
+            <p className="page-kicker">官网安装包 · 自动下载与安装</p>
+            <h2>安装包</h2><p className="page-sub">{pkgItems.length} 个源 · {pkgItems.filter((sw) => packageCache[sw.id]?.cached).length} </p>
           </div>
-          <button className="btn btn-ghost btn-refresh" type="button" onClick={loadAll} disabled={loading} title="?>
+          <button className="btn btn-ghost btn-refresh" type="button" onClick={loadAll} disabled={loading} title="刷新">
             <span className={`refresh-icon${loading ? " is-spinning" : ""}`}></span>
           </button>
         </header>
 
         <section className="package-command-center">
           <div>
-            <span className="command-kicker"></span>
-            <strong>?eGame AMD ?/strong>
+            <span className="command-kicker">官方安装包策略</span><strong>无缓存自动下载；WeGame 执行自动化，AMD 打开官方安装器。</strong>
           </div>
           <div className="command-metrics">
-            <span>{pkgItems.length} </span>
-            <span>{pkgItems.filter((sw) => packageCache[sw.id]?.cached).length} </span>
-            <span>{formatSize(cachedBytes)} </span>
+            <span>{pkgItems.length} 个源</span>
+            <span>{pkgItems.filter((sw) => packageCache[sw.id]?.cached).length} 个缓存</span>
+            <span>{formatSize(cachedBytes)} 本地包</span>
           </div>
           <button className="btn btn-sm" type="button" onClick={() => void detectInstalledNow(pkgItems)} disabled={loading || !pkgItems.length}>
-            ?          </button>
+            重新检测
+          </button>
         </section>
 
-        {pkgItems.length === 0 && <p className="auto-empty">?/p>}
+        {pkgItems.length === 0 && <p className="auto-empty">暂无安装包源。</p>}
         {pkgItems.map((sw) => {
           const cached = packageCache[sw.id]?.cached;
           const cacheInfo = packageCache[sw.id];
@@ -2884,7 +2793,18 @@ function App() {
                   : isInstalled
                     ? "installed"
                     : "idle";
-          const installStatusText = st?.state === "error" ? "" : isInstalled ? "" : "";
+          const installStatusText =
+            st?.state === "uninstall_failed"
+              ? "卸载失败"
+              : st?.state === "error"
+                ? st.message || "安装失败"
+                : st?.state === "uninstalling"
+                  ? "卸载中…"
+                  : isInstalled
+                    ? "已安装"
+                    : cached
+                      ? "已缓存"
+                      : "未下载";
           const installDir = `${installBasePath}\\${sw.id}`;
           return (
             <div key={sw.id} className="pkg-card">
@@ -2893,7 +2813,7 @@ function App() {
                   <span className="pkg-avatar">{sw.display_name.charAt(0)}</span>
                   <div>
                     <strong>{sw.display_name}</strong>
-                    <span className="pkg-meta">{sw.latest_version} ?{formatSize(sw.portable!.size)} ?</span>
+                    <span className="pkg-meta">{sw.latest_version} · {formatSize(sw.portable!.size)} 安装包</span>
                   </div>
                 </div>
                 <span className={`status-chip status-${installStatusKind}`}>
@@ -2901,7 +2821,7 @@ function App() {
                 </span>
               </div>
 
-              <div className="pkg-flow pkg-flow-3" aria-label={`${sw.display_name} }>
+              <div className="pkg-flow pkg-flow-3" aria-label={`${sw.display_name} 安装工作流`}>
                 <span className="pkg-flow-step done"></span>
                 <span className={`pkg-flow-step${cached ? " done" : " active"}`}></span>
                 <span className={`pkg-flow-step${isInstalled ? " done" : cached ? " active" : ""}`}></span>
@@ -2909,11 +2829,11 @@ function App() {
 
               <div className="pkg-path-grid">
                 <div>
-                  <span></span>
+                  <span>缓存文件</span>
                   <code>{cacheInfo?.path || sw.portable!.name}</code>
                 </div>
                 <div>
-                  <span></span>
+                  <span>目标目录</span>
                   <code>{installDir}</code>
                 </div>
               </div>
@@ -2927,27 +2847,29 @@ function App() {
 
               <div className="pkg-card-actions">
                 <button className="btn btn-sm" type="button" disabled={isBusy} onClick={() => void detectInstalledNow([sw])}>
-                  ?                </button>
+                  检测安装
+                </button>
                 {!isInstalled && (
                   <button className="btn btn-sm btn-primary" type="button" disabled={isBusy} onClick={() => void installOfficialSoftware(sw)}>
-                    ?
+                    立即安装
                   </button>
                 )}
                 <button className="btn btn-sm" type="button" disabled={isBusy} onClick={() => void cacheOne(sw)}>
-                  {cached ? "" : ""}
+                  {cached ? "刷新缓存" : "下载并缓存"}
                 </button>
                 {isInstalled && (
                   <button className="btn btn-sm btn-danger" type="button" disabled={isBusy} onClick={() => void uninstallInstaller(sw)}>
-                    ?
+                    卸载
                   </button>
                 )}
                 <button className="btn btn-sm" type="button" disabled={!cached || isBusy} onClick={() => void openCachedPackage(sw)}>
-                  ?                </button>
+                  打开安装包
+                </button>
                 <button className="btn btn-sm" type="button" disabled={isBusy} onClick={() => void copyInstallDir(sw)}>
-                  
+                  复制安装路径
                 </button>
                 <button className="btn btn-sm btn-ghost" type="button" onClick={() => setNav("automation")}>
-                  ?
+                  编辑步骤
                 </button>
               </div>
               {st && (st.state === "error" || st.state === "uninstall_failed" || st.state === "done") && (
@@ -2965,30 +2887,30 @@ function App() {
       <div className="page page-stack">
         <header className="page-head">
           <div>
-            <p className="page-kicker">?/p>
-            <h2>?/h2>
+            <p className="page-kicker">低频全局配置</p>
+            <h2>设置</h2>
           </div>
         </header>
         <div className="insight-grid">
           <div className="insight-card">
-            <span></span>
-            <strong>{isCustomPath ? "" : "?"}</strong>
+            <span>安装位置</span>
+            <strong>{isCustomPath ? "自定义" : "默认"}</strong>
           </div>
           <div className="insight-card">
-            <span></span>
-            <strong>{cachedItems.length} ?/strong>
+            <span>缓存包</span>
+            <strong>{cachedItems.length} 个</strong>
           </div>
           <div className="insight-card">
-            <span></span>
+            <span>缓存体积</span>
             <strong>{formatSize(cachedBytes)}</strong>
           </div>
           <div className="insight-card">
-            <span></span>
-            <strong>{Object.values(installed).filter(Boolean).length} ?/strong>
+            <span>已安装</span>
+            <strong>{Object.values(installed).filter(Boolean).length} 个</strong>
           </div>
         </div>
         <section className="auto-panel">
-          <h3></h3>
+          <h3>安装根目录</h3>
           <div className="path-row">
             <input
               id="baseDirInput"
@@ -3000,15 +2922,15 @@ function App() {
             />
           </div>
           <div className="path-actions">
-            <button className="btn btn-sm" type="button" onClick={pickFolder}>?/button>
-            <button className="btn btn-sm btn-primary" type="button" onClick={savePath}>?/button>
-            <button className="btn btn-sm" type="button" onClick={useDefaultPath}>??/button>
-            <button className="btn btn-sm" type="button" onClick={resetDefaultPath}>?/button>
+            <button className="btn btn-sm" type="button" onClick={pickFolder}>浏览</button>
+            <button className="btn btn-sm btn-primary" type="button" onClick={savePath}>保存</button>
+            <button className="btn btn-sm" type="button" onClick={useDefaultPath}>使用默认</button>
+            <button className="btn btn-sm" type="button" onClick={resetDefaultPath}>重置</button>
           </div>
-          <p className="page-hint">?data\?data\packages?AppData\Local\software-manager\apps</p>
+          <p className="page-hint">配置在 data\config.json；安装包缓存保存在 data\packages；软件默认装到 AppData\Local\software-manager\apps</p>
         </section>
         <section className="auto-panel settings-dir-panel">
-          <h3></h3>
+          <h3>目录浏览</h3>
           <DirExplorer
             base={pathSettings?.current_base ?? pathInput}
             software={software}
@@ -3036,7 +2958,7 @@ function App() {
       <div className="workspace">
         {/*  sidebar nav  */}
         <nav className="sidebar-nav">
-          <p className="sidebar-nav-title"></p>
+          <p className="sidebar-nav-title">软件管家</p>
           {NAV.map((item) => (
             <button
               key={item.id}
@@ -3058,39 +2980,6 @@ function App() {
           {nav === "automation" && <AutomationPage software={software} />}
           {nav === "settings" && renderSettingsPage()}
         </section>
-        {showAddCustom && (
-          <div className="custom-software-overlay">
-            <div className="custom-software-modal">
-              <h3>?/h3>
-              <form onSubmit={submitCustomSoftware}>
-                <div className="form-group">
-                  <label>ID (?</label>
-                  <input required value={customForm.id} onChange={e => setCustomForm({...customForm, id: e.target.value})} placeholder="? myapp" />
-                </div>
-                <div className="form-group">
-                  <label>?/label>
-                  <input required value={customForm.display_name} onChange={e => setCustomForm({...customForm, display_name: e.target.value})} placeholder="? MyApp" />
-                </div>
-                <div className="form-group">
-                  <label>GitHub ?/label>
-                  <input required value={customForm.repo} onChange={e => setCustomForm({...customForm, repo: e.target.value})} placeholder="? user/repo" />
-                </div>
-                <div className="form-group">
-                  <label>?()</label>
-                  <input required value={customForm.asset_match} onChange={e => setCustomForm({...customForm, asset_match: e.target.value})} placeholder="? .zip ?portable" />
-                </div>
-                <div className="form-group">
-                  <label>?/label>
-                  <input required value={customForm.exe_match} onChange={e => setCustomForm({...customForm, exe_match: e.target.value})} placeholder="? App.exe" />
-                </div>
-                <div className="modal-actions">
-                  <button className="btn" type="button" onClick={() => setShowAddCustom(false)}>?/button>
-                  <button className="btn btn-primary" type="submit" disabled={loading}>?/button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
       </div>
     </main>
   );
