@@ -141,7 +141,14 @@ if ($matched.Count -eq 0) { exit 2 }
     } else if output.status.code() == Some(2) {
         format!("未找到目标窗口: {title}")
     } else {
-        format!("关闭目标窗口失败: {}", if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() })
+        format!(
+            "关闭目标窗口失败: {}",
+            if stderr.trim().is_empty() {
+                stdout.trim()
+            } else {
+                stderr.trim()
+            }
+        )
     };
     Ok(VisualTargetResult {
         success,
@@ -253,7 +260,10 @@ mod cursor_control {
         fn SendInput(count: u32, inputs: *mut c_void, size: i32) -> u32;
         fn GetSystemMetrics(index: i32) -> i32;
         fn mouse_event(flags: u32, dx: u32, dy: u32, data: u32, extra_info: usize);
-        fn EnumWindows(callback: Option<unsafe extern "system" fn(isize, isize) -> i32>, lparam: isize) -> i32;
+        fn EnumWindows(
+            callback: Option<unsafe extern "system" fn(isize, isize) -> i32>,
+            lparam: isize,
+        ) -> i32;
         fn IsWindowVisible(hwnd: isize) -> i32;
         fn GetWindowTextLengthW(hwnd: isize) -> i32;
         fn GetWindowTextW(hwnd: isize, text: *mut u16, max: i32) -> i32;
@@ -396,10 +406,7 @@ mod cursor_control {
         }
         let mut slot = Some((title_filter.trim().to_string(), 0isize));
         unsafe {
-            let _ = EnumWindows(
-                Some(enum_window_by_title),
-                &mut slot as *mut _ as isize,
-            );
+            let _ = EnumWindows(Some(enum_window_by_title), &mut slot as *mut _ as isize);
         }
         slot.and_then(|(_, hwnd)| is_valid_hwnd(hwnd).then_some(hwnd))
     }
@@ -453,7 +460,10 @@ mod cursor_control {
     }
 
     fn screen_to_client(hwnd: isize, screen_x: i32, screen_y: i32) -> Option<Point> {
-        let mut point = Point { x: screen_x, y: screen_y };
+        let mut point = Point {
+            x: screen_x,
+            y: screen_y,
+        };
         let ok = unsafe { ScreenToClient(hwnd, &mut point) };
         (ok != 0).then_some(point)
     }
@@ -497,7 +507,12 @@ mod cursor_control {
 
     fn click_targets(root_hwnd: Option<isize>, screen_x: i32, screen_y: i32) -> Vec<isize> {
         let mut targets = Vec::new();
-        let hit = unsafe { WindowFromPoint(Point { x: screen_x, y: screen_y }) };
+        let hit = unsafe {
+            WindowFromPoint(Point {
+                x: screen_x,
+                y: screen_y,
+            })
+        };
         if is_valid_hwnd(hit) {
             targets.push(hit);
         }
@@ -563,11 +578,7 @@ mod cursor_control {
         }
     }
 
-    fn move_via_window_messages(
-        root_hwnd: Option<isize>,
-        screen_x: i32,
-        screen_y: i32,
-    ) -> bool {
+    fn move_via_window_messages(root_hwnd: Option<isize>, screen_x: i32, screen_y: i32) -> bool {
         if let Some(root) = root_hwnd {
             focus_window(root);
             std::thread::sleep(Duration::from_millis(120));
@@ -719,9 +730,7 @@ mod cursor_control {
         let method = if moved {
             "物理鼠标".into()
         } else {
-            format!(
-                "物理鼠标(失败, 虚拟屏 {vx},{vy} {vw}x{vh})"
-            )
+            format!("物理鼠标(失败, 虚拟屏 {vx},{vy} {vw}x{vh})")
         };
         InputReport {
             success: moved,
@@ -1198,7 +1207,11 @@ fn save_rules_file(file: &VisualRulesFile) -> Result<(), String> {
 
 fn localize_visual_message(message: Option<String>, success: bool) -> String {
     let Some(message) = message else {
-        return if success { "完成".into() } else { "失败".into() };
+        return if success {
+            "完成".into()
+        } else {
+            "失败".into()
+        };
     };
 
     match message.as_str() {
@@ -1277,9 +1290,7 @@ fn apply_visual_input(
     };
 
     let format_failed = |target_x: i32, target_y: i32, fx: i32, fy: i32| -> String {
-        format!(
-            "鼠标未到位；目标 ({target_x}, {target_y})，当前 ({fx}, {fy})"
-        )
+        format!("鼠标未到位；目标 ({target_x}, {target_y})，当前 ({fx}, {fy})")
     };
 
     let window_title = result.window_title.as_deref();
@@ -1298,7 +1309,8 @@ fn apply_visual_input(
         .filter(|text| !text.is_empty())
         .filter(|_| action == "inputText");
 
-    let ps_result = run_physical_input_ps(x, y, click || type_text.is_some(), type_text, window_title);
+    let ps_result =
+        run_physical_input_ps(x, y, click || type_text.is_some(), type_text, window_title);
     let (success, detail) = match ps_result {
         Ok(ps) => {
             let cursor_ok = ps
@@ -1322,12 +1334,7 @@ fn apply_visual_input(
                     format!("同进程PS移动 ({x}, {y})")
                 }
             } else {
-                format_failed(
-                    x,
-                    y,
-                    ps.cursor_x.unwrap_or(-1),
-                    ps.cursor_y.unwrap_or(-1),
-                )
+                format_failed(x, y, ps.cursor_x.unwrap_or(-1), ps.cursor_y.unwrap_or(-1))
             };
             if ok {
                 (true, detail)
@@ -1368,7 +1375,10 @@ fn apply_visual_input(
             if report.success {
                 (
                     true,
-                    format!("Rust{} ({}, {})", report.method, report.target_x, report.target_y),
+                    format!(
+                        "Rust{} ({}, {})",
+                        report.method, report.target_x, report.target_y
+                    ),
                 )
             } else {
                 (
@@ -1670,7 +1680,11 @@ fn effective_steps(file: &VisualRulesFile) -> Vec<AutomationStep> {
     effective_steps_without_templates(file)
 }
 
-fn resolve_input_text(action: &str, input_mode: &str, input_text: &str) -> Result<Option<String>, String> {
+fn resolve_input_text(
+    action: &str,
+    input_mode: &str,
+    input_text: &str,
+) -> Result<Option<String>, String> {
     if action != "inputText" {
         return Ok(None);
     }
@@ -1762,7 +1776,9 @@ pub fn save_automation_template_cmd(
 }
 
 #[tauri::command]
-pub fn set_active_automation_template_cmd(template_id: String) -> Result<Vec<AutomationStep>, String> {
+pub fn set_active_automation_template_cmd(
+    template_id: String,
+) -> Result<Vec<AutomationStep>, String> {
     let mut file = load_rules_file().unwrap_or_default();
     ensure_template_state(&mut file);
     let steps = file
@@ -1778,7 +1794,9 @@ pub fn set_active_automation_template_cmd(template_id: String) -> Result<Vec<Aut
 }
 
 #[tauri::command]
-pub fn delete_automation_template_cmd(template_id: String) -> Result<Vec<AutomationTemplate>, String> {
+pub fn delete_automation_template_cmd(
+    template_id: String,
+) -> Result<Vec<AutomationTemplate>, String> {
     let mut file = load_rules_file().unwrap_or_default();
     ensure_template_state(&mut file);
     if file.templates.len() <= 1 {
@@ -1808,7 +1826,10 @@ pub fn delete_automation_template_cmd(template_id: String) -> Result<Vec<Automat
 }
 
 #[tauri::command]
-pub async fn run_automation_step_cmd(step_id: String, dry_run: bool) -> Result<VisualTargetResult, String> {
+pub async fn run_automation_step_cmd(
+    step_id: String,
+    dry_run: bool,
+) -> Result<VisualTargetResult, String> {
     let file = load_rules_file()?;
     let steps = effective_steps(&file);
     let step = steps
@@ -1895,7 +1916,10 @@ pub async fn run_visual_target_cmd(
 }
 
 #[tauri::command]
-pub async fn run_visual_rule_cmd(rule_id: String, dry_run: bool) -> Result<VisualTargetResult, String> {
+pub async fn run_visual_rule_cmd(
+    rule_id: String,
+    dry_run: bool,
+) -> Result<VisualTargetResult, String> {
     let rules = load_rules_file()?.rules;
     let rule = rules
         .into_iter()

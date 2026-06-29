@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type PointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -21,7 +21,7 @@ interface SoftwareInfo {
   release_url: string;
   published_at: string;
   portable: SoftwareAsset | null;
-  install_kind: "portable" | "installer";
+  install_kind: "portable" | "installer" | "download";
   source_kind: "github" | "official";
   ocr_install: boolean;
 }
@@ -133,6 +133,110 @@ interface AutomationTemplate {
   name: string;
   steps: AutomationStep[];
   updatedAt: number;
+}
+
+interface CustomSourceForm {
+  id: string;
+  display_name: string;
+  source_kind: "github" | "direct";
+  repo: string;
+  asset_match: string;
+  exe_match: string;
+  download_url: string;
+  page_url: string;
+  version: string;
+  file_name: string;
+}
+
+interface DownloadCandidate {
+  url: string;
+  file_name: string;
+  version: string;
+  size: number;
+  source_page: string;
+  matcher: string;
+  score: number;
+}
+
+const DEFAULT_CUSTOM_SOURCE_FORM: CustomSourceForm = {
+  id: "",
+  display_name: "",
+  source_kind: "github",
+  repo: "",
+  asset_match: "",
+  exe_match: "",
+  download_url: "",
+  page_url: "",
+  version: "",
+  file_name: "",
+};
+
+const BUILT_IN_SOFTWARE_IDS = new Set(["stranslate", "quickclipboard", "leagueakari", "wegame", "amd-adrenalin", "winget"]);
+
+function slugifySourceId(name: string) {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+  return slug || "source";
+}
+
+function generateCustomSourceId(name: string, existingIds: Iterable<string>) {
+  const used = new Set(existingIds);
+  const base = slugifySourceId(name);
+  let candidate = base;
+  let index = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}-${index}`;
+    index += 1;
+  }
+  return candidate;
+}
+
+function titleFromFileName(fileName: string) {
+  const raw = fileName.split(/[?#]/)[0].split(/[\\/]/).pop() ?? fileName;
+  const stem = raw.replace(/\.[a-z0-9]{2,10}$/i, "");
+  const words = stem
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .split(/[^a-zA-Z0-9]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => !/^\d+(\.\d+)*$/.test(part))
+    .filter((part) => !/^(setup|installer|install|download|release|stable|latest|x64|x86|win|windows)$/i.test(part));
+  if (!words.length) return "";
+  return words
+    .map((word) => {
+      const lower = word.toLowerCase();
+      if (word.length <= 3 && word === word.toUpperCase()) return word;
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join(" ");
+}
+
+function fileNameFromUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    return decodeURIComponent(parsed.pathname.split("/").pop() ?? "");
+  } catch {
+    return decodeURIComponent(url.split(/[?#]/)[0].split("/").pop() ?? "");
+  }
+}
+
+function parseGithubRepo(input: string) {
+  const trimmed = input.trim().replace(/\/+$/, "");
+  const withoutHost = trimmed
+    .replace(/^https?:\/\/github\.com\//i, "")
+    .replace(/^github\.com\//i, "");
+  const [owner, repo] = withoutHost.split("/").filter(Boolean);
+  if (!owner || !repo || owner.includes(":") || repo.includes(":")) return "";
+  return `${owner.replace(/\.git$/i, "")}/${repo.replace(/\.git$/i, "")}`;
+}
+
+function titleFromRepo(repo: string) {
+  const name = repo.split("/").pop() ?? "";
+  return titleFromFileName(name) || name;
 }
 
 function sleep(ms: number) {
@@ -288,7 +392,24 @@ function softwareSourceLabel(sw: SoftwareInfo): string {
 }
 
 function softwareKindLabel(sw: SoftwareInfo): string {
+  if (sw.install_kind === "download") return "仅下载";
   return sw.install_kind === "installer" ? "安装包" : "便携版";
+}
+
+function versionDisplay(sw: SoftwareInfo): string {
+  const version = sw.latest_version.trim();
+  if (!isDownloadOnly(sw)) return version;
+  if (!version || version === "自定义下载") return "固定链接";
+  if (version === "最新版本") return "自动解析";
+  return version;
+}
+
+function isDownloadOnly(sw: SoftwareInfo) {
+  return sw.install_kind === "download";
+}
+
+function isUserSource(sw: SoftwareInfo) {
+  return !BUILT_IN_SOFTWARE_IDS.has(sw.id);
 }
 
 /*  helpers  */
@@ -1888,20 +2009,28 @@ function App() {
   const [packageCache, setPackageCache] = useState<Record<string, PackageCacheInfo>>({});
   const [librarySourceFilter, setLibrarySourceFilter] = useState<LibrarySourceFilter>("all");
   const [libraryDetailId, setLibraryDetailId] = useState<string | null>(null);
+  const [showCustomSource, setShowCustomSource] = useState(false);
+  const [editingCustomSourceId, setEditingCustomSourceId] = useState<string | null>(null);
+  const [customSourceForm, setCustomSourceForm] = useState<CustomSourceForm>(DEFAULT_CUSTOM_SOURCE_FORM);
+  const [scanCandidates, setScanCandidates] = useState<DownloadCandidate[]>([]);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanMessage, setScanMessage] = useState("");
 
+  const failedItems = software.filter((sw) => sw.latest_version.startsWith("查询失败"));
   const selectable = software.filter((sw) => sw.portable);
-  const libraryItems = selectable.filter((sw) => {
+  const visibleLibraryBaseItems = software.filter((sw) => sw.portable || sw.latest_version.startsWith("查询失败"));
+  const libraryItems = visibleLibraryBaseItems.filter((sw) => {
     if (librarySourceFilter === "all") return true;
     return softwareSourceKind(sw) === librarySourceFilter;
   });
   const githubLibraryItems = selectable.filter((sw) => softwareSourceKind(sw) === "github");
   const officialLibraryItems = selectable.filter((sw) => softwareSourceKind(sw) === "official");
   const portableItems = selectable.filter((sw) => sw.install_kind === "portable");
+  const downloadOnlyItems = selectable.filter((sw) => sw.install_kind === "download");
   const installerItems = software.filter((sw) => sw.install_kind === "installer" && sw.portable);
-  const failedItems = software.filter((sw) => sw.latest_version.startsWith("查询失败"));
   const cachedItems = software.filter((sw) => packageCache[sw.id]?.cached);
   const cachedBytes = cachedItems.reduce((sum, sw) => sum + (packageCache[sw.id]?.size || sw.portable?.size || 0), 0);
-  const notInstalledCount = selectable.filter((sw) => !installed[sw.id]).length;
+  const notInstalledCount = selectable.filter((sw) => !isDownloadOnly(sw) && !installed[sw.id]).length;
   const sourceHealth = failedItems.length ? `${failedItems.length} 个源异常` : loading ? "同步中" : software.length ? "正常" : "待检测";
   const isCustomPath =
     pathSettings && pathSettings.current_base.replace(/\\+$/, "") !== pathSettings.default_base.replace(/\\+$/, "");
@@ -1965,7 +2094,7 @@ function App() {
 
   async function refreshInstalled(list: SoftwareInfo[]) {
     const entries = await Promise.all(
-      list.map(async (sw) => {
+      list.filter((sw) => !isDownloadOnly(sw)).map(async (sw) => {
         const ok = await invoke<boolean>("is_software_installed", { id: sw.id });
         return [sw.id, ok] as const;
       })
@@ -1974,7 +2103,7 @@ function App() {
   }
 
   async function detectInstalledNow(list: SoftwareInfo[] = software) {
-    const targets = list.filter((sw) => sw.portable);
+    const targets = list.filter((sw) => sw.portable && !isDownloadOnly(sw));
     if (!targets.length) return;
 
     setStatus((prev) => {
@@ -2182,6 +2311,135 @@ function App() {
     }
   }
 
+  function openNewCustomSourceModal() {
+    setEditingCustomSourceId(null);
+    setCustomSourceForm(DEFAULT_CUSTOM_SOURCE_FORM);
+    setScanCandidates([]);
+    setScanMessage("");
+    setShowCustomSource(true);
+  }
+
+  async function openEditCustomSourceModal(sw: SoftwareInfo) {
+    if (!isUserSource(sw)) return;
+    try {
+      const config = await invoke<CustomSourceForm>("get_custom_software", { id: sw.id });
+      setEditingCustomSourceId(config.id);
+      setScanCandidates([]);
+      setScanMessage("");
+      setCustomSourceForm({ ...DEFAULT_CUSTOM_SOURCE_FORM, ...config });
+      setShowCustomSource(true);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function saveCustomSource(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const displayName = customSourceForm.display_name.trim();
+    const finalDisplayName = displayName || titleFromFileName(customSourceForm.file_name) || titleFromFileName(fileNameFromUrl(customSourceForm.download_url));
+    const form = {
+      ...customSourceForm,
+      id: editingCustomSourceId ?? generateCustomSourceId(finalDisplayName, software.map((sw) => sw.id)),
+      display_name: finalDisplayName,
+      repo: customSourceForm.source_kind === "github" ? (parseGithubRepo(customSourceForm.repo) || customSourceForm.repo.trim()) : customSourceForm.repo.trim(),
+      asset_match: customSourceForm.asset_match.trim(),
+      exe_match: customSourceForm.exe_match.trim(),
+      download_url: customSourceForm.download_url.trim(),
+      page_url: customSourceForm.page_url.trim(),
+      version: customSourceForm.version.trim(),
+      file_name: customSourceForm.file_name.trim(),
+    };
+
+    try {
+      setLoading(true);
+      await invoke("add_custom_software", { config: form });
+      setShowCustomSource(false);
+      setEditingCustomSourceId(null);
+      setCustomSourceForm(DEFAULT_CUSTOM_SOURCE_FORM);
+      setScanCandidates([]);
+      setScanMessage("");
+      await loadAll();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function scanCustomSourceUrl() {
+    const isGithubSource = customSourceForm.source_kind === "github";
+    const url = isGithubSource
+      ? customSourceForm.repo.trim()
+      : customSourceForm.download_url.trim() || customSourceForm.page_url.trim();
+    if (!url) {
+      setScanMessage(isGithubSource ? "请先填写 GitHub 仓库或链接。" : "请先填写官网或下载地址。");
+      return;
+    }
+    try {
+      setScanBusy(true);
+      setScanMessage(isGithubSource ? "正在读取 GitHub Latest Release…" : "正在扫描官网页面和脚本…");
+      const candidates = await invoke<DownloadCandidate[]>("scan_download_candidates", { url });
+      setScanCandidates(candidates);
+      if (candidates.length === 0) {
+        setScanMessage(isGithubSource ? "Latest Release 没有可下载的安装包资产。" : "没有找到安装包候选项，可以改填 .exe / .zip / .msi 直链。");
+      } else {
+        setScanMessage(`找到 ${candidates.length} 个候选项，请选择一个作为下载规则。`);
+      }
+    } catch (e) {
+      setScanCandidates([]);
+      setScanMessage(String(e));
+    } finally {
+      setScanBusy(false);
+    }
+  }
+
+  function selectDownloadCandidate(candidate: DownloadCandidate) {
+    if (customSourceForm.source_kind === "github") {
+      const repo = parseGithubRepo(customSourceForm.repo);
+      setCustomSourceForm((form) => ({
+        ...form,
+        repo: repo || form.repo,
+        display_name: form.display_name.trim() || titleFromRepo(repo || form.repo),
+        asset_match: candidate.matcher,
+      }));
+      setScanMessage(`已选择 ${candidate.file_name}；以后会通过 GitHub Release API 自动追 latest。`);
+      return;
+    }
+    const sourceUrl = customSourceForm.download_url.trim() || candidate.source_page;
+    const inferredName = titleFromFileName(candidate.file_name);
+    setCustomSourceForm((form) => ({
+      ...form,
+      display_name: form.display_name.trim() || inferredName,
+      download_url: sourceUrl,
+      page_url: form.page_url.trim() || candidate.source_page,
+      asset_match: candidate.matcher,
+      version: "",
+      file_name: "",
+    }));
+    setScanMessage(`已选择 ${candidate.file_name}；以后会按匹配规则自动追同类最新版。`);
+  }
+
+  async function removeCustomSource(sw: SoftwareInfo) {
+    if (!isUserSource(sw)) return;
+    const ok = window.confirm(`确定删除下载源「${sw.display_name}」？\n\n已缓存的安装包不会自动删除。`);
+    if (!ok) return;
+    try {
+      setLoading(true);
+      await invoke("remove_custom_software", { id: sw.id });
+      setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(sw.id);
+        return next;
+      });
+      if (libraryDetailId === sw.id) setLibraryDetailId(null);
+      await loadAll();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function uninstallOne(sw: SoftwareInfo) {
     const id = sw.id;
     setStatus((prev) => ({ ...prev, [id]: { state: "uninstalling", percent: 0, message: "卸载中…" } }));
@@ -2230,6 +2488,11 @@ function App() {
     if (st?.state === "uninstall_failed") return { label: "卸载失败", kind: "uninstall-failed" };
     if (st?.state === "error") return { label: st.message || "安装失败", kind: "error" };
     if (st?.state === "done") return { label: st.message, kind: "ok" };
+    if (sw.install_kind === "download") {
+      if (!sw.portable) return { label: sw.latest_version.startsWith("查询失败") ? "检测失败" : "无下载项", kind: "warn" };
+      if (packageCache[sw.id]?.cached) return { label: "已缓存", kind: "cached" };
+      return { label: "未下载", kind: "idle" };
+    }
     if (sw.install_kind === "installer") {
       if (installed[sw.id]) return { label: "已安装", kind: "installed" };
       if (packageCache[sw.id]?.cached) return { label: "已缓存", kind: "cached" };
@@ -2267,6 +2530,8 @@ function App() {
     const isBusy = isItemBusy(sw.id);
     const isInstalled = installed[sw.id];
     const canInstallGithub = sw.install_kind === "portable" && !!sw.portable;
+    const downloadOnly = isDownloadOnly(sw);
+    const cached = packageCache[sw.id]?.cached;
     
 
     const detailBtn = (
@@ -2281,7 +2546,18 @@ function App() {
     );
 
     let installBtn;
-    if (isInstalled) {
+    if (downloadOnly) {
+      installBtn = (
+        <button
+          className="btn btn-sm btn-primary library-action-install"
+          type="button"
+          disabled={isBusy || !sw.portable}
+          onClick={() => void (cached ? openCachedPackage(sw) : cacheOne(sw))}
+        >
+          {cached ? "打开" : "下载"}
+        </button>
+      );
+    } else if (isInstalled) {
       installBtn = (
         <button
           className="btn btn-sm btn-danger library-action-install"
@@ -2346,7 +2622,7 @@ function App() {
         </div>
         <span className={`col-source source-chip source-${softwareSourceKind(sw)}`}>{softwareSourceLabel(sw)}</span>
         <span className="col-ver">
-          <span className="ver-chip">{sw.latest_version}</span>
+          <span className="ver-chip">{versionDisplay(sw)}</span>
         </span>
         <span className="col-date">{formatDate(sw.published_at)}</span>
         <span className="col-size">{sw.portable ? formatSize(sw.portable.size) : ""}</span>
@@ -2358,6 +2634,8 @@ function App() {
   function renderLibrarySoftwareDetail(sw: SoftwareInfo) {
     const theme = APP_THEME[sw.id] || "theme-mint";
     const isOfficial = softwareSourceKind(sw) === "official";
+    const downloadOnly = isDownloadOnly(sw);
+    const userSource = isUserSource(sw);
     const cached = packageCache[sw.id]?.cached;
     const cacheInfo = packageCache[sw.id];
     const st = status[sw.id];
@@ -2376,7 +2654,7 @@ function App() {
             <span className="col-check" />
             <span className="col-name">软件</span>
             <span className="col-source">来源</span>
-            <span className="col-ver">版本</span>
+            <span className="col-ver">版本/渠道</span>
             <span className="col-date">发布</span>
             <span className="col-size">大小</span>
             <span className="col-status">状态</span>
@@ -2412,23 +2690,53 @@ function App() {
               <code>{sw.release_url || "—"}</code>
             </div>
             <div>
-              <span>安装目录</span>
+              <span>{downloadOnly ? "下载缓存" : "安装目录"}</span>
               <code>{paths?.install_dir || installDir}</code>
             </div>
             <div>
               <span>缓存路径</span>
               <code>{cacheInfo?.path || (cached ? "已缓存" : "未缓存")}</code>
             </div>
-            {isOfficial && (
+            {isOfficial && !downloadOnly && (
               <div>
                 <span>安装流程</span>
                 <code>官网源 · 缓存 → 检测安装 → 自动化/打开安装器</code>
               </div>
             )}
+            {downloadOnly && (
+              <div>
+                <span>处理方式</span>
+                <code>只下载到 data\packages，不执行安装</code>
+              </div>
+            )}
           </div>
         </section>
 
-        {isOfficial ? (
+        {downloadOnly ? (
+          <div className="library-detail-actions">
+            <button className="btn btn-sm btn-primary" type="button" disabled={isBusy || !sw.portable} onClick={() => void cacheOne(sw)}>
+              {cached ? "刷新缓存" : "下载"}
+            </button>
+            <button className="btn btn-sm" type="button" disabled={!cached || isBusy} onClick={() => void openCachedPackage(sw)}>
+              打开缓存
+            </button>
+            {sw.release_url && (
+              <button className="btn btn-sm btn-ghost" type="button" onClick={() => void openUrl(sw.release_url)}>
+                打开来源
+              </button>
+            )}
+            {userSource && (
+              <button className="btn btn-sm" type="button" disabled={isBusy || loading} onClick={() => void openEditCustomSourceModal(sw)}>
+                编辑源
+              </button>
+            )}
+            {userSource && (
+              <button className="btn btn-sm btn-danger" type="button" disabled={isBusy || loading} onClick={() => void removeCustomSource(sw)}>
+                删除源
+              </button>
+            )}
+          </div>
+        ) : isOfficial ? (
           <div className="library-detail-actions">
             <button className="btn btn-sm" type="button" disabled={isBusy} onClick={() => void detectInstalledNow([sw])}>
               检测安装
@@ -2477,10 +2785,10 @@ function App() {
       <div className="page page-stack">
         <header className="page-head">
           <div>
-            <p className="page-kicker">便携版 · 官网安装包</p>
+            <p className="page-kicker">便携版 · 官网安装包 · 自定义下载源</p>
             <h2>软件库</h2>
             <p className="page-sub">
-              {selectable.length} 个可用（GitHub {githubLibraryItems.length} · 官网 {officialLibraryItems.length}）· {notInstalledCount} 个未安装 · {loading ? "同步中" : software.length ? "检测完成" : "未检测"}
+              {selectable.length} 个可用（GitHub {githubLibraryItems.length} · 官网 {officialLibraryItems.length} · 下载源 {downloadOnlyItems.length}）· {notInstalledCount} 个未安装 · {loading ? "同步中" : software.length ? "检测完成" : "未检测"}
             </p>
           </div>
           <button className="btn btn-ghost btn-refresh" type="button" onClick={loadAll} disabled={loading || batchBusy} title="刷新">
@@ -2502,8 +2810,8 @@ function App() {
             <strong>{officialLibraryItems.length} 个</strong>
           </div>
           <div className="insight-card">
-            <span>缓存体积</span>
-            <strong>{formatSize(cachedBytes)}</strong>
+            <span>下载源</span>
+            <strong>{downloadOnlyItems.length} 个</strong>
           </div>
         </div>
 
@@ -2531,7 +2839,7 @@ function App() {
           </button>
         </div>
 
-        <p className="library-open-hint">官网软件单击行进入详情；GitHub 便携版双击行进入详情，单击勾选后点「安装」。</p>
+        <p className="library-open-hint">官网和下载源单击行进入详情；GitHub 便携版双击行进入详情，单击勾选后点「安装」。</p>
 
         <div className="action-bar">
           <span className={`sel-count${selected.size ? " sel-count-on" : ""}`}>
@@ -2541,6 +2849,7 @@ function App() {
           <button className="btn btn-link" type="button" onClick={() => setSelected(new Set())} disabled={batchBusy || !selected.size}>清空</button>
           {error && <span className="action-error">{error}</span>}
           <div className="action-spacer" />
+          <button className="btn" type="button" onClick={openNewCustomSourceModal} disabled={loading || batchBusy}>添加下载源</button>
           <button className="btn" type="button" onClick={() => void detectInstalledNow()} disabled={loading || batchBusy || !selectable.length}>一键检测</button>
           <button className="btn btn-primary" type="button" onClick={batchInstall} disabled={batchBusy || !installableIds.length}>
             {primaryActionLabel}{installableIds.length ? ` (${installableIds.length})` : ""}
@@ -2556,7 +2865,7 @@ function App() {
           <span className="col-check" />
           <span className="col-name">软件</span>
           <span className="col-source">来源</span>
-          <span className="col-ver">版本</span>
+          <span className="col-ver">版本/渠道</span>
           <span className="col-date">发布</span>
           <span className="col-size">大小</span>
           <span className="col-status">状态</span>
@@ -2579,7 +2888,7 @@ function App() {
                 className={`list-row list-row-library ${theme}${checked ? " row-selected" : ""}${installed[sw.id] ? " row-installed" : ""}${isBusy ? " row-busy" : ""}${isOfficial ? " row-official row-openable" : " row-github row-openable"}`}
                 style={st?.state === "downloading" ? { ["--dl-progress" as string]: `${st.percent}%` } : undefined}
                 onClick={() => {
-                  if (isOfficial) openLibraryDetail(sw.id);
+                  if (isOfficial || isDownloadOnly(sw)) openLibraryDetail(sw.id);
                   else toggleRow(sw.id, canSelect);
                 }}
                 onDoubleClick={() => openLibraryDetail(sw.id)}
@@ -2944,6 +3253,228 @@ function App() {
     );
   }
 
+  function renderCustomSourceModal() {
+    if (!showCustomSource) return null;
+
+    const isGithub = customSourceForm.source_kind === "github";
+    const closeCustomSourceModal = () => {
+      setShowCustomSource(false);
+      setEditingCustomSourceId(null);
+      setScanCandidates([]);
+      setScanMessage("");
+    };
+    return (
+      <div className="custom-software-overlay" onMouseDown={closeCustomSourceModal}>
+        <form className="custom-software-modal" onSubmit={saveCustomSource} onMouseDown={(e) => e.stopPropagation()}>
+          <h3>{editingCustomSourceId ? "编辑下载源" : "添加下载源"}</h3>
+          <div className="form-group">
+            <label>来源类型</label>
+            <select
+              className="path-input"
+              value={customSourceForm.source_kind}
+              onChange={(e) => {
+                setScanCandidates([]);
+                setScanMessage("");
+                setCustomSourceForm((form) => ({ ...form, source_kind: e.target.value as CustomSourceForm["source_kind"] }));
+              }}
+            >
+              <option value="github">GitHub Release</option>
+              <option value="direct">官网自动解析 / 直接下载</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label>显示名称</label>
+            <input
+              required
+              value={customSourceForm.display_name}
+              onChange={(e) => setCustomSourceForm((form) => ({ ...form, display_name: e.target.value }))}
+              placeholder="例如 My Tool"
+              spellCheck={false}
+            />
+          </div>
+
+          {isGithub ? (
+            <>
+              <div className="form-group">
+                <label>GitHub 仓库或链接</label>
+                <div className="source-scan-row">
+                  <input
+                    required
+                    value={customSourceForm.repo}
+                    onChange={(e) => {
+                      setScanCandidates([]);
+                      setScanMessage("");
+                      const nextRepo = e.target.value;
+                      const parsedRepo = parseGithubRepo(nextRepo);
+                      setCustomSourceForm((form) => ({
+                        ...form,
+                        repo: parsedRepo || nextRepo,
+                        display_name: form.display_name.trim() ? form.display_name : titleFromRepo(parsedRepo || nextRepo),
+                      }));
+                    }}
+                    placeholder="owner/repo 或 https://github.com/owner/repo"
+                    spellCheck={false}
+                  />
+                  <button className="btn btn-sm" type="button" onClick={scanCustomSourceUrl} disabled={scanBusy || !customSourceForm.repo.trim()}>
+                    {scanBusy ? "扫描中" : "扫描 Release"}
+                  </button>
+                </div>
+              </div>
+              {(scanMessage || scanCandidates.length > 0) && (
+                <div className="scan-panel">
+                  {scanMessage && <p className="scan-message">{scanMessage}</p>}
+                  {scanCandidates.length > 0 && (
+                    <div className="scan-candidates">
+                      {scanCandidates.map((candidate) => {
+                        const selected = customSourceForm.asset_match === candidate.matcher;
+                        return (
+                          <button
+                            key={candidate.url}
+                            className={`scan-candidate${selected ? " is-selected" : ""}`}
+                            type="button"
+                            onClick={() => selectDownloadCandidate(candidate)}
+                            title={candidate.url}
+                          >
+                            <span className="scan-candidate-main">
+                              <strong>{candidate.file_name}</strong>
+                              <span>{candidate.version} · {candidate.size ? formatSize(candidate.size) : "大小未知"}</span>
+                            </span>
+                            <span className="scan-candidate-rule">{candidate.matcher || "未生成规则"}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="form-group">
+                <label>Release 资产匹配规则</label>
+                <input
+                  required
+                  value={customSourceForm.asset_match}
+                  onChange={(e) => setCustomSourceForm((form) => ({ ...form, asset_match: e.target.value }))}
+                  placeholder="扫描后自动生成，例如 x64 exe"
+                  spellCheck={false}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="form-group">
+                <label>官网或下载地址</label>
+                <div className="source-scan-row">
+                  <input
+                    required
+                    value={customSourceForm.download_url}
+                    onChange={(e) => {
+                      setScanCandidates([]);
+                      setScanMessage("");
+                      const nextUrl = e.target.value;
+                      const githubRepo = parseGithubRepo(nextUrl);
+                      if (/github\.com\//i.test(nextUrl) && githubRepo) {
+                        setCustomSourceForm((form) => ({
+                          ...form,
+                          source_kind: "github",
+                          repo: githubRepo,
+                          download_url: "",
+                          display_name: form.display_name.trim() ? form.display_name : titleFromRepo(githubRepo),
+                        }));
+                        setScanMessage("已识别为 GitHub 仓库，建议扫描 Release 选择下载资产。");
+                        return;
+                      }
+                      const inferredName = titleFromFileName(fileNameFromUrl(nextUrl));
+                      setCustomSourceForm((form) => ({
+                        ...form,
+                        download_url: nextUrl,
+                        display_name: form.display_name.trim() ? form.display_name : inferredName,
+                      }));
+                    }}
+                    placeholder="例如 https://im.qq.com/ 或 https://example.com/setup.exe"
+                    spellCheck={false}
+                  />
+                  <button className="btn btn-sm" type="button" onClick={scanCustomSourceUrl} disabled={scanBusy || !customSourceForm.download_url.trim()}>
+                    {scanBusy ? "扫描中" : "扫描官网"}
+                  </button>
+                </div>
+              </div>
+              {(scanMessage || scanCandidates.length > 0) && (
+                <div className="scan-panel">
+                  {scanMessage && <p className="scan-message">{scanMessage}</p>}
+                  {scanCandidates.length > 0 && (
+                    <div className="scan-candidates">
+                      {scanCandidates.map((candidate) => {
+                        const selected = customSourceForm.asset_match === candidate.matcher;
+                        return (
+                          <button
+                            key={candidate.url}
+                            className={`scan-candidate${selected ? " is-selected" : ""}`}
+                            type="button"
+                            onClick={() => selectDownloadCandidate(candidate)}
+                            title={candidate.url}
+                          >
+                            <span className="scan-candidate-main">
+                              <strong>{candidate.file_name}</strong>
+                              <span>{candidate.version} · {candidate.size ? formatSize(candidate.size) : "大小未知"}</span>
+                            </span>
+                            <span className="scan-candidate-rule">{candidate.matcher || "未生成规则"}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="form-group">
+                <label>自动匹配规则（扫描后自动生成）</label>
+                <input
+                  value={customSourceForm.asset_match}
+                  onChange={(e) => setCustomSourceForm((form) => ({ ...form, asset_match: e.target.value }))}
+                  placeholder="通常不用填；扫描官网并选择候选项后自动生成"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="form-group">
+                <label>来源页面（可选）</label>
+                <input
+                  value={customSourceForm.page_url}
+                  onChange={(e) => setCustomSourceForm((form) => ({ ...form, page_url: e.target.value }))}
+                  placeholder="直链下载时可填官网页面，用来打开来源"
+                  spellCheck={false}
+                />
+              </div>
+              <div className="form-group form-grid-2">
+                <label>
+                  显示版本（高级，可不填）
+                  <input
+                    value={customSourceForm.version}
+                    onChange={(e) => setCustomSourceForm((form) => ({ ...form, version: e.target.value }))}
+                    placeholder="v1.0.0"
+                    spellCheck={false}
+                  />
+                </label>
+                <label>
+                  保存文件名（高级，可不填）
+                  <input
+                    value={customSourceForm.file_name}
+                    onChange={(e) => setCustomSourceForm((form) => ({ ...form, file_name: e.target.value }))}
+                    placeholder="setup.exe"
+                    spellCheck={false}
+                  />
+                </label>
+              </div>
+            </>
+          )}
+
+          <p className="modal-hint">只填官网或下载地址即可。官网建议先扫描并选择候选项；直链会固定下载当前地址。没有数字版本时会显示为稳定版、自动解析或固定链接。</p>
+          <div className="modal-actions">
+            <button className="btn" type="button" onClick={closeCustomSourceModal}>取消</button>
+            <button className="btn btn-primary" type="submit" disabled={loading}>保存</button>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <main className="app">
       <div className="window-chrome">
@@ -2981,6 +3512,7 @@ function App() {
           {nav === "settings" && renderSettingsPage()}
         </section>
       </div>
+      {renderCustomSourceModal()}
     </main>
   );
 }

@@ -67,7 +67,8 @@ pub async fn install_software(
     } else if file_name.ends_with(".exe") {
         // 便携版 exe 要复制到安装目录,缓存包保留在 data/packages
         let exe_path = work_dir.join(&file_name);
-        std::fs::copy(&package_path, &exe_path).map_err(|e| format!("复制便携版 exe 失败: {}", e))?;
+        std::fs::copy(&package_path, &exe_path)
+            .map_err(|e| format!("复制便携版 exe 失败: {}", e))?;
         exe_path
     } else {
         return Err(format!("不支持的格式: {}", file_name));
@@ -159,7 +160,10 @@ async fn ensure_cached_package(
     if !is_valid_cached_package(&temp_path, expected_size)? {
         let actual = std::fs::metadata(&temp_path).map(|m| m.len()).unwrap_or(0);
         let _ = std::fs::remove_file(&temp_path);
-        return Err(format!("安装包大小不匹配: 期望 {} 字节,实际 {} 字节", expected_size, actual));
+        return Err(format!(
+            "安装包大小不匹配: 期望 {} 字节,实际 {} 字节",
+            expected_size, actual
+        ));
     }
 
     std::fs::rename(&temp_path, package_path).map_err(|e| format!("保存安装包缓存失败: {}", e))?;
@@ -188,20 +192,29 @@ async fn download_with_progress(
     let total = resp.content_length().unwrap_or(0);
     use futures_util::StreamExt;
     let mut stream = resp.bytes_stream();
-    let mut file = tokio::fs::File::create(dest).await.map_err(|e| e.to_string())?;
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut downloaded: u64 = 0;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| e.to_string())?;
         file.write_all(&chunk).await.map_err(|e| e.to_string())?;
         downloaded += chunk.len() as u64;
-        let percent = if total > 0 { (downloaded as f64 / total as f64) * 100.0 } else { 0.0 };
-        let _ = app.emit("download-progress", DownloadProgress {
-            id: id.into(),
-            downloaded,
-            total,
-            percent,
-        });
+        let percent = if total > 0 {
+            (downloaded as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
+        let _ = app.emit(
+            "download-progress",
+            DownloadProgress {
+                id: id.into(),
+                downloaded,
+                total,
+                percent,
+            },
+        );
     }
     file.flush().await.map_err(|e| e.to_string())?;
     Ok(())
@@ -311,7 +324,11 @@ fn collect_exe_candidates(
 }
 
 // 创建桌面快捷方式(.lnk)
-fn create_desktop_shortcut(_app: &AppHandle, id: &str, target: &PathBuf) -> Result<PathBuf, String> {
+fn create_desktop_shortcut(
+    _app: &AppHandle,
+    id: &str,
+    target: &PathBuf,
+) -> Result<PathBuf, String> {
     let shortcut_path = shortcut_path_for_id(id)?;
 
     // 用 PowerShell 的 WScript.Shell 创建 .lnk
@@ -325,7 +342,14 @@ fn create_desktop_shortcut(_app: &AppHandle, id: &str, target: &PathBuf) -> Resu
     );
 
     let status = hidden_command("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps_script])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &ps_script,
+        ])
         .status()
         .map_err(|e| e.to_string())?;
 
@@ -530,7 +554,10 @@ fn common_amd_adrenalin_exe_exists() -> bool {
 
     roots.into_iter().any(|root| {
         [
-            root.join("AMD").join("CNext").join("CNext").join("RadeonSoftware.exe"),
+            root.join("AMD")
+                .join("CNext")
+                .join("CNext")
+                .join("RadeonSoftware.exe"),
             root.join("AMD").join("CNext").join("RadeonSoftware.exe"),
         ]
         .into_iter()
@@ -578,7 +605,8 @@ fn wegame_installed_outside_portable() -> bool {
 
         if let Some(location) = entry.install_location.as_deref() {
             let root = PathBuf::from(location);
-            if root.join("wegame.exe").is_file() || find_exe_in_tree(&root, "wegame.exe").is_some() {
+            if root.join("wegame.exe").is_file() || find_exe_in_tree(&root, "wegame.exe").is_some()
+            {
                 return true;
             }
         }
@@ -587,9 +615,12 @@ fn wegame_installed_outside_portable() -> bool {
             return true;
         }
 
-        for command in [entry.uninstall_string.as_deref(), entry.quiet_uninstall_string.as_deref()]
-            .into_iter()
-            .flatten()
+        for command in [
+            entry.uninstall_string.as_deref(),
+            entry.quiet_uninstall_string.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
         {
             if existing_wegame_exe_from_pathish(command).is_some() {
                 return true;
@@ -735,7 +766,9 @@ fn launch_uninstall_command(command: &str) -> Result<(), String> {
              Start-Process -FilePath $file -ArgumentList $argv -Verb RunAs -WindowStyle Normal"
         )
     } else {
-        format!("$file = {file_json}; Start-Process -FilePath $file -Verb RunAs -WindowStyle Normal")
+        format!(
+            "$file = {file_json}; Start-Process -FilePath $file -Verb RunAs -WindowStyle Normal"
+        )
     };
     let status = hidden_command("powershell")
         .args([

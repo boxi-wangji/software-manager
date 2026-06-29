@@ -69,7 +69,10 @@ fn set_dpi_awareness() {
 
 #[cfg(windows)]
 fn use_bundled_webview2() {
-    let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())) else {
+    let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+    else {
         return;
     };
     let bundled = exe_dir.join("WebView2");

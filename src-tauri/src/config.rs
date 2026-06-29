@@ -137,7 +137,12 @@ pub struct AppInstallPaths {
     pub shortcut: String,
 }
 
-pub fn app_install_paths(id: &str, display_name: &str, version: &str, file_name: &str) -> Result<AppInstallPaths, String> {
+pub fn app_install_paths(
+    id: &str,
+    display_name: &str,
+    version: &str,
+    file_name: &str,
+) -> Result<AppInstallPaths, String> {
     let base = get_install_base();
     let install_dir = base.join(id);
     let download_file = install_dir.join(file_name);

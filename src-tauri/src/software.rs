@@ -6,26 +6,33 @@ use crate::custom_software::{custom_software_targets, load_custom_software};
 
 #[derive(serde::Serialize, Clone)]
 pub struct SoftwareAsset {
-    pub name: String,           // 文件名
+    pub name: String,                 // 文件名
     pub browser_download_url: String, // 下载链接
-    pub size: u64,              // 字节
+    pub size: u64,                    // 字节
 }
 
 #[derive(serde::Serialize, Clone)]
 pub struct SoftwareInfo {
-    pub id: String,             // STranslate / QuickClipboard / LeagueAkari
-    pub display_name: String,   // 显示名
-    pub latest_version: String, // v2.0.8
-    pub release_url: String,    // GitHub Release 页面
-    pub published_at: String,   // 发布时间
+    pub id: String,                      // STranslate / QuickClipboard / LeagueAkari
+    pub display_name: String,            // 显示名
+    pub latest_version: String,          // v2.0.8
+    pub release_url: String,             // GitHub Release 页面
+    pub published_at: String,            // 发布时间
     pub portable: Option<SoftwareAsset>, // 挑出来的便携版
-    pub install_kind: String,    // portable: 自动安装; installer: 只下载/缓存安装包
-    pub source_kind: String,     // github | official
-    pub ocr_install: bool,       // installer 是否提供模拟点击安装
+    pub install_kind: String,            // portable: 自动安装; installer: 只下载/缓存安装包
+    pub source_kind: String,             // github | official
+    pub ocr_install: bool,               // installer 是否提供模拟点击安装
 }
 
 pub enum SoftwareSource {
     Github(String),
+    DirectDownload {
+        url: String,
+        page_url: String,
+        asset_match: String,
+        version: String,
+        file_name: String,
+    },
     WegameOfficial,
     AmdAdrenalinOfficial,
 }
@@ -41,7 +48,9 @@ pub struct SoftwareTarget {
 pub fn source_kind_for(target: &SoftwareTarget) -> &'static str {
     match target.source {
         SoftwareSource::Github(_) => "github",
-        SoftwareSource::WegameOfficial | SoftwareSource::AmdAdrenalinOfficial => "official",
+        SoftwareSource::DirectDownload { .. }
+        | SoftwareSource::WegameOfficial
+        | SoftwareSource::AmdAdrenalinOfficial => "official",
     }
 }
 
@@ -106,12 +115,21 @@ pub fn is_portable_target(id: &str, file_name: &str) -> bool {
         _ => {
             let custom_list = load_custom_software();
             if let Some(config) = custom_list.iter().find(|c| c.id == id) {
-                lower.contains(&config.asset_match.to_lowercase())
+                asset_matches(&lower, &config.asset_match)
             } else {
                 false
             }
         }
     }
+}
+
+fn asset_matches(lower_file_name: &str, matcher: &str) -> bool {
+    let tokens: Vec<String> = matcher
+        .split(|ch: char| ch.is_whitespace() || ch == ',' || ch == ';' || ch == '|')
+        .map(|token| token.trim().to_lowercase())
+        .filter(|token| !token.is_empty())
+        .collect();
+    !tokens.is_empty() && tokens.iter().all(|token| lower_file_name.contains(token))
 }
 
 /// 解压后的主程序文件名(避免误选 elevate.exe / Update.exe 等)
