@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type PointerEvent } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -24,6 +24,7 @@ interface SoftwareInfo {
   install_kind: "portable" | "installer" | "download";
   source_kind: "github" | "official";
   ocr_install: boolean;
+  icon_path: string;
 }
 
 interface InstallPathSettings {
@@ -146,6 +147,7 @@ interface CustomSourceForm {
   page_url: string;
   version: string;
   file_name: string;
+  icon_path: string;
 }
 
 interface DownloadCandidate {
@@ -169,6 +171,7 @@ const DEFAULT_CUSTOM_SOURCE_FORM: CustomSourceForm = {
   page_url: "",
   version: "",
   file_name: "",
+  icon_path: "",
 };
 
 const BUILT_IN_SOFTWARE_IDS = new Set(["stranslate", "quickclipboard", "leagueakari", "wegame", "amd-adrenalin", "winget"]);
@@ -410,6 +413,10 @@ function isDownloadOnly(sw: SoftwareInfo) {
 
 function isUserSource(sw: SoftwareInfo) {
   return !BUILT_IN_SOFTWARE_IDS.has(sw.id);
+}
+
+function iconSrc(path: string) {
+  return path ? convertFileSrc(path) : "";
 }
 
 /*  helpers  */
@@ -2440,6 +2447,26 @@ function App() {
     }
   }
 
+  async function refreshCustomSourceIcon(sw: SoftwareInfo, mode: "auto" | "clipboard" | "clear") {
+    if (!isUserSource(sw)) return;
+    try {
+      setLoading(true);
+      if (mode === "auto") {
+        await invoke<string>("fetch_custom_software_icon", { id: sw.id });
+      } else if (mode === "clipboard") {
+        await invoke<string>("save_custom_software_icon_from_clipboard", { id: sw.id });
+      } else {
+        await invoke("clear_custom_software_icon", { id: sw.id });
+      }
+      await loadAll();
+      if (libraryDetailId) setLibraryDetailId(sw.id);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function uninstallOne(sw: SoftwareInfo) {
     const id = sw.id;
     setStatus((prev) => ({ ...prev, [id]: { state: "uninstalling", percent: 0, message: "卸载中…" } }));
@@ -2612,7 +2639,9 @@ function App() {
     return (
       <>
         <div className="col-name">
-          <span className="row-avatar">{sw.display_name.charAt(0)}</span>
+          <span className={`row-avatar ${sw.icon_path ? "custom-icon-mark" : "brand-mark"}`} aria-hidden="true">
+            {sw.icon_path ? <img src={iconSrc(sw.icon_path)} alt="" /> : <span className="brand-mark-core" />}
+          </span>
           <div className="row-text">
             <span className="row-title" title={sw.display_name}>{sw.display_name}</span>
             <span className="row-sub" title={sw.portable?.name ?? softwareKindLabel(sw)}>
@@ -2728,6 +2757,21 @@ function App() {
             {userSource && (
               <button className="btn btn-sm" type="button" disabled={isBusy || loading} onClick={() => void openEditCustomSourceModal(sw)}>
                 编辑源
+              </button>
+            )}
+            {userSource && (
+              <button className="btn btn-sm" type="button" disabled={isBusy || loading} onClick={() => void refreshCustomSourceIcon(sw, "auto")}>
+                自动获取图标
+              </button>
+            )}
+            {userSource && (
+              <button className="btn btn-sm" type="button" disabled={isBusy || loading} onClick={() => void refreshCustomSourceIcon(sw, "clipboard")}>
+                保存截图图标
+              </button>
+            )}
+            {userSource && sw.icon_path && (
+              <button className="btn btn-sm btn-ghost" type="button" disabled={isBusy || loading} onClick={() => void refreshCustomSourceIcon(sw, "clear")}>
+                恢复默认图标
               </button>
             )}
             {userSource && (
@@ -3119,7 +3163,9 @@ function App() {
             <div key={sw.id} className="pkg-card">
               <div className="pkg-card-top">
                 <div className="pkg-title">
-                  <span className="pkg-avatar">{sw.display_name.charAt(0)}</span>
+                  <span className={`pkg-avatar ${sw.icon_path ? "custom-icon-mark" : "brand-mark"}`} aria-hidden="true">
+                    {sw.icon_path ? <img src={iconSrc(sw.icon_path)} alt="" /> : <span className="brand-mark-core" />}
+                  </span>
                   <div>
                     <strong>{sw.display_name}</strong>
                     <span className="pkg-meta">{sw.latest_version} · {formatSize(sw.portable!.size)} 安装包</span>

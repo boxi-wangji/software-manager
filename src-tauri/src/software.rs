@@ -22,6 +22,7 @@ pub struct SoftwareInfo {
     pub install_kind: String,            // portable: 自动安装; installer: 只下载/缓存安装包
     pub source_kind: String,             // github | official
     pub ocr_install: bool,               // installer 是否提供模拟点击安装
+    pub icon_path: String,               // 用户自定义图标路径
 }
 
 pub enum SoftwareSource {
@@ -43,6 +44,7 @@ pub struct SoftwareTarget {
     pub source: SoftwareSource,
     pub install_kind: String,
     pub ocr_install: bool,
+    pub icon_path: String,
 }
 
 pub fn source_kind_for(target: &SoftwareTarget) -> &'static str {
@@ -62,6 +64,7 @@ pub fn software_list() -> Vec<SoftwareTarget> {
             source: SoftwareSource::Github("STranslate/STranslate".into()),
             install_kind: "portable".into(),
             ocr_install: false,
+            icon_path: String::new(),
         },
         SoftwareTarget {
             id: "quickclipboard".into(),
@@ -69,6 +72,7 @@ pub fn software_list() -> Vec<SoftwareTarget> {
             source: SoftwareSource::Github("mosheng1/QuickClipboard".into()),
             install_kind: "portable".into(),
             ocr_install: false,
+            icon_path: String::new(),
         },
         SoftwareTarget {
             id: "leagueakari".into(),
@@ -76,6 +80,7 @@ pub fn software_list() -> Vec<SoftwareTarget> {
             source: SoftwareSource::Github("LeagueAkari/LeagueAkari".into()),
             install_kind: "portable".into(),
             ocr_install: false,
+            icon_path: String::new(),
         },
         SoftwareTarget {
             id: "wegame".into(),
@@ -83,6 +88,7 @@ pub fn software_list() -> Vec<SoftwareTarget> {
             source: SoftwareSource::WegameOfficial,
             install_kind: "installer".into(),
             ocr_install: true,
+            icon_path: String::new(),
         },
         SoftwareTarget {
             id: "amd-adrenalin".into(),
@@ -90,6 +96,7 @@ pub fn software_list() -> Vec<SoftwareTarget> {
             source: SoftwareSource::AmdAdrenalinOfficial,
             install_kind: "installer".into(),
             ocr_install: false,
+            icon_path: String::new(),
         },
         SoftwareTarget {
             id: "winget".into(),
@@ -97,6 +104,7 @@ pub fn software_list() -> Vec<SoftwareTarget> {
             source: SoftwareSource::Github("microsoft/winget-cli".into()),
             install_kind: "installer".into(),
             ocr_install: false,
+            icon_path: String::new(),
         },
     ];
     list.extend(custom_software_targets());

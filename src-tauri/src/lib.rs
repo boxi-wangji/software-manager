@@ -10,7 +10,10 @@ use config::{
     get_app_install_paths_cmd, get_install_paths_cmd, get_package_cache_info_cmd,
     open_cached_package_cmd, reset_install_paths_cmd, set_install_paths_cmd,
 };
-use custom_software::{add_custom_software, get_custom_software, remove_custom_software};
+use custom_software::{
+    add_custom_software, clear_custom_software_icon, fetch_custom_software_icon,
+    get_custom_software, remove_custom_software, save_custom_software_icon_from_clipboard,
+};
 use github::GithubRelease;
 use installer::{
     cache_software_package, install_software, is_software_installed, uninstall_software,
@@ -53,6 +56,7 @@ async fn fetch_all_software() -> Result<Vec<SoftwareInfo>, String> {
             Ok(mut info) => {
                 info.ocr_install = target.ocr_install;
                 info.source_kind = source_kind_for(&target).into();
+                info.icon_path = target.icon_path.clone();
                 results.push(info);
             }
             Err(e) => {
@@ -67,6 +71,7 @@ async fn fetch_all_software() -> Result<Vec<SoftwareInfo>, String> {
                     install_kind: target.install_kind.clone(),
                     source_kind: source_kind_for(&target).into(),
                     ocr_install: target.ocr_install,
+                    icon_path: target.icon_path.clone(),
                 });
             }
         }
@@ -145,6 +150,7 @@ async fn fetch_one_github_release(
         install_kind: install_kind.into(),
         source_kind: "github".into(),
         ocr_install: false,
+        icon_path: String::new(),
     })
 }
 
@@ -188,6 +194,7 @@ async fn fetch_direct_download_release(
         install_kind: target.install_kind.clone(),
         source_kind: source_kind_for(target).into(),
         ocr_install: false,
+        icon_path: target.icon_path.clone(),
     })
 }
 
@@ -1167,6 +1174,7 @@ async fn fetch_wegame_release(target: &SoftwareTarget) -> Result<SoftwareInfo, S
         install_kind: target.install_kind.clone(),
         source_kind: "official".into(),
         ocr_install: target.ocr_install,
+        icon_path: target.icon_path.clone(),
     })
 }
 
@@ -1205,6 +1213,7 @@ async fn fetch_amd_adrenalin_release(target: &SoftwareTarget) -> Result<Software
         install_kind: target.install_kind.clone(),
         source_kind: "official".into(),
         ocr_install: target.ocr_install,
+        icon_path: target.icon_path.clone(),
     })
 }
 
@@ -1574,6 +1583,9 @@ pub fn run() {
             add_custom_software,
             get_custom_software,
             remove_custom_software,
+            fetch_custom_software_icon,
+            save_custom_software_icon_from_clipboard,
+            clear_custom_software_icon,
             pick_screen_color_cmd,
             close_target_window_cmd,
             is_elevated_cmd,

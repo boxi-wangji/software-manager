@@ -26,6 +26,8 @@ pub struct CustomSoftwareConfig {
     pub version: String,
     #[serde(default)]
     pub file_name: String,
+    #[serde(default)]
+    pub icon_path: String,
 }
 
 fn default_source_kind() -> String {
@@ -125,6 +127,7 @@ pub async fn add_custom_software(mut config: CustomSoftwareConfig) -> Result<(),
     config.page_url = config.page_url.trim().to_string();
     config.version = config.version.trim().to_string();
     config.file_name = config.file_name.trim().to_string();
+    config.icon_path = config.icon_path.trim().to_string();
 
     if config.source_kind == "github" {
         config.repo = normalize_github_repo(&config.repo).unwrap_or(config.repo);
@@ -155,6 +158,81 @@ pub async fn get_custom_software(id: String) -> Result<CustomSoftwareConfig, Str
         .into_iter()
         .find(|item| item.id == id)
         .ok_or_else(|| "自定义下载源不存在".into())
+}
+
+#[tauri::command]
+pub async fn fetch_custom_software_icon(id: String) -> Result<String, String> {
+    let config = get_custom_config_by_id(&id)?;
+    let icon_url = resolve_icon_url(&config).await?;
+    let client = reqwest::Client::builder()
+        .user_agent("software-manager")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(&icon_url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("图标下载失败: HTTP {}", resp.status()));
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let ext = icon_ext_from_content_type(&content_type)
+        .or_else(|| icon_ext_from_url(&icon_url))
+        .unwrap_or("png");
+    save_custom_icon_bytes(&id, &bytes, ext)
+}
+
+#[tauri::command]
+pub async fn save_custom_software_icon_from_clipboard(id: String) -> Result<String, String> {
+    let path = custom_icon_file_path(&id, "png")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let script = format!(
+        r#"
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$img = [System.Windows.Forms.Clipboard]::GetImage()
+if ($null -eq $img) {{ exit 2 }}
+$img.Save('{}', [System.Drawing.Imaging.ImageFormat]::Png)
+"#,
+        path.to_string_lossy().replace('\'', "''")
+    );
+    let status = hidden_command("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Sta",
+            "-WindowStyle",
+            "Hidden",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err("剪贴板里没有图片；请先截图并复制到剪贴板".into());
+    }
+    update_custom_icon_path(&id, &path)
+}
+
+#[tauri::command]
+pub async fn clear_custom_software_icon(id: String) -> Result<(), String> {
+    let mut list = load_custom_software();
+    let Some(item) = list.iter_mut().find(|item| item.id == id) else {
+        return Err("自定义下载源不存在".into());
+    };
+    item.icon_path.clear();
+    save_custom_software(&list)
 }
 
 fn validate_custom_software(config: &CustomSoftwareConfig) -> Result<(), String> {
@@ -191,6 +269,200 @@ fn validate_custom_software(config: &CustomSoftwareConfig) -> Result<(), String>
     }
 
     Ok(())
+}
+
+fn get_custom_config_by_id(id: &str) -> Result<CustomSoftwareConfig, String> {
+    load_custom_software()
+        .into_iter()
+        .find(|item| item.id == id)
+        .ok_or_else(|| "自定义下载源不存在".into())
+}
+
+async fn resolve_icon_url(config: &CustomSoftwareConfig) -> Result<String, String> {
+    if config.source_kind == "github" {
+        let repo = normalize_github_repo(&config.repo).unwrap_or_else(|| config.repo.clone());
+        let owner = repo.split('/').next().unwrap_or("").trim();
+        if !owner.is_empty() {
+            return Ok(format!("https://github.com/{}.png?size=128", owner));
+        }
+    }
+
+    let page = if !config.page_url.trim().is_empty() {
+        config.page_url.trim()
+    } else {
+        config.download_url.trim()
+    };
+    if page.is_empty() {
+        return Err("没有可用于获取图标的官网地址".into());
+    }
+    let page_url = normalize_http_url(page)?;
+    let client = reqwest::Client::builder()
+        .user_agent("software-manager")
+        .build()
+        .map_err(|e| e.to_string())?;
+    if is_probably_download_url(&page_url) {
+        return favicon_url_for_origin(&page_url);
+    }
+    let html = client
+        .get(&page_url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    find_icon_link(&html, &page_url).or_else(|_| favicon_url_for_origin(&page_url))
+}
+
+fn find_icon_link(html: &str, base_url: &str) -> Result<String, String> {
+    let mut best: Option<(i32, String)> = None;
+    let mut rest = html;
+    while let Some(index) = rest.find("<link") {
+        let after = &rest[index..];
+        let end = after.find('>').unwrap_or(after.len());
+        let tag = &after[..end];
+        let rel = extract_attr(tag, "rel").unwrap_or_default().to_lowercase();
+        if rel.contains("icon") {
+            if let Some(href) = extract_attr(tag, "href") {
+                let score = if rel.contains("apple-touch-icon") {
+                    30
+                } else if rel.contains("shortcut") {
+                    20
+                } else {
+                    10
+                };
+                if let Some(url) = absolutize_url(&href, base_url) {
+                    if best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
+                        best = Some((score, url));
+                    }
+                }
+            }
+        }
+        rest = &after[end..];
+    }
+    best.map(|(_, url)| url)
+        .ok_or_else(|| "官网页面没有声明图标".into())
+}
+
+fn extract_attr(tag: &str, name: &str) -> Option<String> {
+    let pattern = format!("{name}=");
+    let start = tag.find(&pattern)? + pattern.len();
+    let tail = tag[start..].trim_start();
+    let quote = tail.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    Some(tail[1..].split(quote).next()?.to_string())
+}
+
+fn normalize_http_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+        Ok(trimmed.to_string())
+    } else {
+        Ok(format!("https://{trimmed}"))
+    }
+}
+
+fn absolutize_url(url: &str, base_url: &str) -> Option<String> {
+    if url.starts_with("https://") || url.starts_with("http://") {
+        return Some(url.to_string());
+    }
+    if url.starts_with("//") {
+        let scheme = reqwest::Url::parse(base_url).ok()?.scheme().to_string();
+        return Some(format!("{scheme}:{url}"));
+    }
+    let base = reqwest::Url::parse(base_url).ok()?;
+    base.join(url).ok().map(|url| url.to_string())
+}
+
+fn favicon_url_for_origin(url: &str) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| e.to_string())?;
+    let origin = parsed.origin().ascii_serialization();
+    Ok(format!("{}/favicon.ico", origin.trim_end_matches('/')))
+}
+
+fn is_probably_download_url(url: &str) -> bool {
+    let lower = url.split('?').next().unwrap_or(url).to_lowercase();
+    [
+        ".exe",
+        ".msi",
+        ".zip",
+        ".7z",
+        ".rar",
+        ".dmg",
+        ".appimage",
+        ".deb",
+        ".rpm",
+        ".msixbundle",
+    ]
+    .iter()
+    .any(|suffix| lower.ends_with(suffix))
+}
+
+fn icon_ext_from_content_type(content_type: &str) -> Option<&'static str> {
+    let lower = content_type.to_lowercase();
+    if lower.contains("png") {
+        Some("png")
+    } else if lower.contains("jpeg") || lower.contains("jpg") {
+        Some("jpg")
+    } else if lower.contains("svg") {
+        Some("svg")
+    } else if lower.contains("webp") {
+        Some("webp")
+    } else if lower.contains("icon") || lower.contains("ico") {
+        Some("ico")
+    } else {
+        None
+    }
+}
+
+fn icon_ext_from_url(url: &str) -> Option<&'static str> {
+    let lower = url.split('?').next().unwrap_or(url).to_lowercase();
+    ["png", "jpg", "jpeg", "svg", "webp", "ico"]
+        .into_iter()
+        .find(|ext| lower.ends_with(&format!(".{ext}")))
+        .map(|ext| if ext == "jpeg" { "jpg" } else { ext })
+}
+
+fn custom_icon_file_path(id: &str, ext: &str) -> Result<PathBuf, String> {
+    Ok(data_dir()?
+        .join("icons")
+        .join(format!("{}.{}", slugify_source_id(id), ext)))
+}
+
+fn save_custom_icon_bytes(id: &str, bytes: &[u8], ext: &str) -> Result<String, String> {
+    let path = custom_icon_file_path(id, ext)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    update_custom_icon_path(id, &path)
+}
+
+fn update_custom_icon_path(id: &str, path: &PathBuf) -> Result<String, String> {
+    let mut list = load_custom_software();
+    let Some(item) = list.iter_mut().find(|item| item.id == id) else {
+        return Err("自定义下载源不存在".into());
+    };
+    item.icon_path = path.to_string_lossy().to_string();
+    let icon_path = item.icon_path.clone();
+    save_custom_software(&list)?;
+    Ok(icon_path)
+}
+
+#[cfg(windows)]
+fn hidden_command(program: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut command = std::process::Command::new(program);
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
+
+#[cfg(not(windows))]
+fn hidden_command(program: &str) -> std::process::Command {
+    std::process::Command::new(program)
 }
 
 fn normalize_github_repo(input: &str) -> Option<String> {
@@ -301,6 +573,7 @@ pub fn custom_software_targets() -> Vec<SoftwareTarget> {
             },
             install_kind: "download".into(),
             ocr_install: false,
+            icon_path: c.icon_path,
         })
         .collect()
 }

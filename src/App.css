@@ -1189,6 +1189,66 @@ option {
   font-weight: 800;
 }
 
+.brand-mark {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  color: var(--row-accent, var(--accent));
+}
+
+.brand-mark::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border-radius: 8px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.2), transparent 42%),
+    color-mix(in srgb, currentColor 30%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 42%, transparent);
+  box-shadow: inset 0 -8px 18px rgba(0, 0, 0, 0.18);
+}
+
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 8px;
+  width: 13px;
+  height: 7px;
+  transform: translateX(-50%);
+  border-radius: 7px 7px 2px 2px;
+  border: 2px solid currentColor;
+  border-bottom: 0;
+  opacity: 0.8;
+}
+
+.brand-mark-core {
+  position: relative;
+  z-index: 1;
+  width: 12px;
+  height: 10px;
+  border-radius: 3px;
+  background: currentColor;
+  box-shadow:
+    0 -5px 0 -2px color-mix(in srgb, currentColor 72%, transparent),
+    0 5px 0 -3px rgba(255, 255, 255, 0.45);
+}
+
+.custom-icon-mark {
+  overflow: hidden;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.custom-icon-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: calc(var(--radius) - 3px);
+  display: block;
+}
+
 .row-text {
   min-width: 0;
   flex: 1;
@@ -1690,6 +1750,10 @@ option {
   background: var(--accent-soft);
   border: 1px solid rgba(94, 224, 194, 0.22);
   font-weight: 850;
+}
+
+.pkg-avatar.brand-mark {
+  color: var(--accent);
 }
 
 .pkg-card-top strong {
