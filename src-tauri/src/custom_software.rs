@@ -27,6 +27,8 @@ pub struct CustomSoftwareConfig {
     #[serde(default)]
     pub file_name: String,
     #[serde(default)]
+    pub silent_install_args: String,
+    #[serde(default)]
     pub icon_path: String,
 }
 
@@ -127,6 +129,7 @@ pub async fn add_custom_software(mut config: CustomSoftwareConfig) -> Result<(),
     config.page_url = config.page_url.trim().to_string();
     config.version = config.version.trim().to_string();
     config.file_name = config.file_name.trim().to_string();
+    config.silent_install_args = config.silent_install_args.trim().to_string();
     config.icon_path = config.icon_path.trim().to_string();
 
     if config.source_kind == "github" {
@@ -142,14 +145,24 @@ pub async fn add_custom_software(mut config: CustomSoftwareConfig) -> Result<(),
         config.id = generate_unique_custom_id(&config.display_name, &list);
     }
 
+    apply_default_silent_install_args(&mut config);
+
     validate_custom_software(&config)?;
+    let icon_id = config.id.clone();
+    let should_fetch_icon = config.icon_path.is_empty();
     // 覆盖旧的或追加新的
     if let Some(pos) = list.iter().position(|x| x.id == config.id) {
         list[pos] = config;
     } else {
         list.push(config);
     }
-    save_custom_software(&list)
+    save_custom_software(&list)?;
+
+    // 图标失败不能影响软件下载源保存；下次启动还会继续补齐。
+    if should_fetch_icon {
+        let _ = fetch_custom_software_icon(icon_id).await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -187,6 +200,23 @@ pub async fn fetch_custom_software_icon(id: String) -> Result<String, String> {
         .or_else(|| icon_ext_from_url(&icon_url))
         .unwrap_or("png");
     save_custom_icon_bytes(&id, &bytes, ext)
+}
+
+#[tauri::command]
+pub async fn fetch_missing_custom_software_icons() -> Vec<String> {
+    let missing_ids: Vec<String> = load_custom_software()
+        .into_iter()
+        .filter(|item| item.icon_path.trim().is_empty())
+        .map(|item| item.id)
+        .collect();
+
+    let mut updated_ids = Vec::new();
+    for id in missing_ids {
+        if fetch_custom_software_icon(id.clone()).await.is_ok() {
+            updated_ids.push(id);
+        }
+    }
+    updated_ids
 }
 
 #[tauri::command]
@@ -296,6 +326,10 @@ async fn resolve_icon_url(config: &CustomSoftwareConfig) -> Result<String, Strin
         return Err("没有可用于获取图标的官网地址".into());
     }
     let page_url = normalize_http_url(page)?;
+    // Cursor 的更新 API 会直接跳转到 200 MB 安装包，不能把它当网页读取。
+    if is_cursor_official_source(&page_url) {
+        return Ok("https://cursor.com/favicon.ico".into());
+    }
     let client = reqwest::Client::builder()
         .user_agent("software-manager")
         .build()
@@ -400,6 +434,20 @@ fn is_probably_download_url(url: &str) -> bool {
     .any(|suffix| lower.ends_with(suffix))
 }
 
+fn is_cursor_official_source(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    matches!(
+        parsed.host_str().map(|host| host.to_ascii_lowercase()),
+        Some(host)
+            if host == "cursor.com"
+                || host == "www.cursor.com"
+                || host == "api2.cursor.sh"
+                || host == "downloads.cursor.com"
+    )
+}
+
 fn icon_ext_from_content_type(content_type: &str) -> Option<&'static str> {
     let lower = content_type.to_lowercase();
     if lower.contains("png") {
@@ -490,6 +538,11 @@ fn normalize_github_repo(input: &str) -> Option<String> {
 }
 
 fn display_name_from_custom_source(config: &CustomSoftwareConfig) -> Option<String> {
+    if is_cursor_official_source(&config.download_url)
+        || is_cursor_official_source(&config.page_url)
+    {
+        return Some("Cursor".into());
+    }
     if !config.file_name.trim().is_empty() {
         return display_name_from_file_name(&config.file_name);
     }
@@ -554,26 +607,122 @@ pub async fn remove_custom_software(id: String) -> Result<(), String> {
     save_custom_software(&list)
 }
 
+/// 为已识别的官方 Inno Setup 安装包补上安全的默认静默参数。
+/// 已由用户填写的参数永远不会被覆盖。
+pub fn ensure_default_silent_install_profiles() -> Result<(), String> {
+    let mut list = load_custom_software();
+    let mut changed = false;
+
+    for config in &mut list {
+        let before = config.silent_install_args.clone();
+        apply_default_silent_install_args(config);
+        if config.silent_install_args != before {
+            changed = true;
+        }
+    }
+
+    if changed {
+        save_custom_software(&list)?;
+    }
+    Ok(())
+}
+
+fn apply_default_silent_install_args(config: &mut CustomSoftwareConfig) {
+    if !config.silent_install_args.trim().is_empty() || config.source_kind != "direct" {
+        return;
+    }
+
+    let identity = [
+        config.id.as_str(),
+        config.display_name.as_str(),
+        config.download_url.as_str(),
+        config.page_url.as_str(),
+        config.asset_match.as_str(),
+    ]
+    .join(" ")
+    .to_ascii_lowercase();
+
+    if identity.contains("visual-studio-code")
+        || identity.contains("visual studio code")
+        || identity.contains("code.visualstudio.com")
+    {
+        config.silent_install_args =
+            r#"/VERYSILENT /SUPPRESSMSGBOXES /MERGETASKS="desktopicon,!associatewithfiles""#.into();
+    } else if identity.contains("cursor") || identity.contains("cursor.com") {
+        config.silent_install_args = "/VERYSILENT /SUPPRESSMSGBOXES".into();
+    }
+}
+
 pub fn custom_software_targets() -> Vec<SoftwareTarget> {
     let list = load_custom_software();
     list.into_iter()
-        .map(|c| SoftwareTarget {
-            id: c.id,
-            display_name: c.display_name,
-            source: if c.source_kind == "direct" {
-                SoftwareSource::DirectDownload {
-                    url: c.download_url,
-                    page_url: c.page_url,
-                    asset_match: c.asset_match,
-                    version: c.version,
-                    file_name: c.file_name,
-                }
-            } else {
-                SoftwareSource::Github(c.repo)
-            },
-            install_kind: "download".into(),
-            ocr_install: false,
-            icon_path: c.icon_path,
+        .map(|mut c| {
+            apply_default_silent_install_args(&mut c);
+            SoftwareTarget {
+                id: c.id,
+                display_name: c.display_name,
+                source: if c.source_kind == "direct" {
+                    SoftwareSource::DirectDownload {
+                        url: c.download_url,
+                        page_url: c.page_url,
+                        asset_match: c.asset_match,
+                        version: c.version,
+                        file_name: c.file_name,
+                    }
+                } else {
+                    SoftwareSource::Github(c.repo)
+                },
+                install_kind: "download".into(),
+                ocr_install: false,
+                silent_install_args: c.silent_install_args,
+                icon_path: c.icon_path,
+            }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_default_silent_install_args, find_icon_link, CustomSoftwareConfig};
+
+    #[test]
+    fn prefers_apple_touch_icon_from_official_page() {
+        let html = r#"
+            <link rel="shortcut icon" href="/assets/favicon.ico" sizes="128x128" />
+            <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" />
+        "#;
+
+        let icon = find_icon_link(html, "https://code.visualstudio.com/thank-you?dv=win64user")
+            .expect("official page icon");
+
+        assert_eq!(
+            icon,
+            "https://code.visualstudio.com/assets/apple-touch-icon.png"
+        );
+    }
+
+    #[test]
+    fn supplies_vscode_silent_install_profile() {
+        let mut config = CustomSoftwareConfig {
+            id: "visual-studio-code".into(),
+            display_name: "Visual Studio Code".into(),
+            source_kind: "direct".into(),
+            repo: String::new(),
+            asset_match: "vscodeusersetup x64 exe".into(),
+            exe_match: String::new(),
+            download_url: "https://code.visualstudio.com/thank-you?dv=win64user".into(),
+            page_url: String::new(),
+            version: String::new(),
+            file_name: String::new(),
+            silent_install_args: String::new(),
+            icon_path: String::new(),
+        };
+
+        apply_default_silent_install_args(&mut config);
+
+        assert_eq!(
+            config.silent_install_args,
+            r#"/VERYSILENT /SUPPRESSMSGBOXES /MERGETASKS="desktopicon,!associatewithfiles""#
+        );
+    }
 }

@@ -1,6 +1,4 @@
-// 软件清单配置:每个软件对应一个 GitHub 仓库
-// 第一版只支持 GitHub 源,官网源留第二版
-// 加新软件只需要往这个数组里加一条
+// 软件清单配置：每个软件对应一个可识别的发布源。
 
 use crate::custom_software::{custom_software_targets, load_custom_software};
 
@@ -19,10 +17,11 @@ pub struct SoftwareInfo {
     pub release_url: String,             // GitHub Release 页面
     pub published_at: String,            // 发布时间
     pub portable: Option<SoftwareAsset>, // 挑出来的便携版
-    pub install_kind: String,            // portable: 自动安装; installer: 只下载/缓存安装包
-    pub source_kind: String,             // github | official
-    pub ocr_install: bool,               // installer 是否提供模拟点击安装
-    pub icon_path: String,               // 用户自定义图标路径
+    pub install_kind: String, // portable: 自动安装; installer: 官网安装包; store: Microsoft Store
+    pub source_kind: String,  // github | official | store
+    pub ocr_install: bool,    // installer 是否提供模拟点击安装
+    pub silent_install_args: String, // 下载完成后直接执行的静默安装参数
+    pub icon_path: String,    // 用户自定义图标路径
 }
 
 pub enum SoftwareSource {
@@ -36,6 +35,10 @@ pub enum SoftwareSource {
     },
     WegameOfficial,
     AmdAdrenalinOfficial,
+    MicrosoftStore {
+        product_id: String,
+        package_name: String,
+    },
 }
 
 pub struct SoftwareTarget {
@@ -44,6 +47,7 @@ pub struct SoftwareTarget {
     pub source: SoftwareSource,
     pub install_kind: String,
     pub ocr_install: bool,
+    pub silent_install_args: String,
     pub icon_path: String,
 }
 
@@ -53,6 +57,7 @@ pub fn source_kind_for(target: &SoftwareTarget) -> &'static str {
         SoftwareSource::DirectDownload { .. }
         | SoftwareSource::WegameOfficial
         | SoftwareSource::AmdAdrenalinOfficial => "official",
+        SoftwareSource::MicrosoftStore { .. } => "store",
     }
 }
 
@@ -64,6 +69,7 @@ pub fn software_list() -> Vec<SoftwareTarget> {
             source: SoftwareSource::Github("STranslate/STranslate".into()),
             install_kind: "portable".into(),
             ocr_install: false,
+            silent_install_args: String::new(),
             icon_path: String::new(),
         },
         SoftwareTarget {
@@ -72,6 +78,7 @@ pub fn software_list() -> Vec<SoftwareTarget> {
             source: SoftwareSource::Github("mosheng1/QuickClipboard".into()),
             install_kind: "portable".into(),
             ocr_install: false,
+            silent_install_args: String::new(),
             icon_path: String::new(),
         },
         SoftwareTarget {
@@ -80,6 +87,7 @@ pub fn software_list() -> Vec<SoftwareTarget> {
             source: SoftwareSource::Github("LeagueAkari/LeagueAkari".into()),
             install_kind: "portable".into(),
             ocr_install: false,
+            silent_install_args: String::new(),
             icon_path: String::new(),
         },
         SoftwareTarget {
@@ -88,6 +96,7 @@ pub fn software_list() -> Vec<SoftwareTarget> {
             source: SoftwareSource::WegameOfficial,
             install_kind: "installer".into(),
             ocr_install: true,
+            silent_install_args: String::new(),
             icon_path: String::new(),
         },
         SoftwareTarget {
@@ -96,14 +105,20 @@ pub fn software_list() -> Vec<SoftwareTarget> {
             source: SoftwareSource::AmdAdrenalinOfficial,
             install_kind: "installer".into(),
             ocr_install: false,
+            silent_install_args: String::new(),
             icon_path: String::new(),
         },
         SoftwareTarget {
-            id: "winget".into(),
-            display_name: "Winget CLI".into(),
-            source: SoftwareSource::Github("microsoft/winget-cli".into()),
-            install_kind: "installer".into(),
+            // Windows 开始菜单显示为 ChatGPT，但实际 AppX 包名是 OpenAI.Codex。
+            id: "chatgpt".into(),
+            display_name: "ChatGPT".into(),
+            source: SoftwareSource::MicrosoftStore {
+                product_id: "9PLM9XGG6VKS".into(),
+                package_name: "OpenAI.Codex".into(),
+            },
+            install_kind: "store".into(),
             ocr_install: false,
+            silent_install_args: String::new(),
             icon_path: String::new(),
         },
     ];
@@ -119,7 +134,6 @@ pub fn is_portable_target(id: &str, file_name: &str) -> bool {
         "stranslate" => lower == "stranslate-win-portable.zip",
         "quickclipboard" => lower.contains("portable") && lower.ends_with(".exe"),
         "leagueakari" => lower.ends_with("-win.7z"),
-        "winget" => lower.ends_with(".msixbundle") && !lower.contains("dependencies"),
         _ => {
             let custom_list = load_custom_software();
             if let Some(config) = custom_list.iter().find(|c| c.id == id) {
@@ -154,6 +168,32 @@ pub fn preferred_main_exe(id: &str) -> Option<String> {
             } else {
                 None
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{software_list, source_kind_for, SoftwareSource};
+
+    #[test]
+    fn includes_chatgpt_as_a_microsoft_store_app() {
+        let target = software_list()
+            .into_iter()
+            .find(|target| target.id == "chatgpt")
+            .expect("ChatGPT target");
+
+        assert_eq!(source_kind_for(&target), "store");
+        assert_eq!(target.install_kind, "store");
+        match target.source {
+            SoftwareSource::MicrosoftStore {
+                product_id,
+                package_name,
+            } => {
+                assert_eq!(product_id, "9PLM9XGG6VKS");
+                assert_eq!(package_name, "OpenAI.Codex");
+            }
+            _ => panic!("ChatGPT must use the Microsoft Store source"),
         }
     }
 }

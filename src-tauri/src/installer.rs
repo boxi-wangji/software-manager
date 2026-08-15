@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Notify;
 
-use crate::config::{get_install_base, package_cache_path};
+use crate::config::{data_dir, get_install_base, package_cache_path};
 use crate::software::preferred_main_exe;
 
 #[cfg(windows)]
@@ -20,6 +23,46 @@ fn hidden_command(program: &str) -> Command {
     Command::new(program)
 }
 
+/// 读取 Microsoft Store AppX 包的本机版本。商店应用没有普通安装目录，
+/// 只能通过包注册信息判断是否已安装。
+#[cfg(windows)]
+pub fn microsoft_store_package_version(package_name: &str) -> Option<String> {
+    if package_name.is_empty()
+        || !package_name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '.')
+    {
+        return None;
+    }
+
+    let script = format!(
+        "$package = Get-AppxPackage -Name '{package_name}' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $package) {{ $package.Version.ToString() }}"
+    );
+    let output = hidden_command("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &script,
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!version.is_empty()).then_some(version)
+}
+
+#[cfg(not(windows))]
+pub fn microsoft_store_package_version(_package_name: &str) -> Option<String> {
+    None
+}
+
 // 下载文件到本地,通过事件上报进度
 // on_progress 事件 payload: { downloaded: u64, total: u64, percent: f64 }
 #[derive(serde::Serialize, Clone)]
@@ -28,6 +71,114 @@ pub struct DownloadProgress {
     pub downloaded: u64,
     pub total: u64,
     pub percent: f64,
+}
+
+const DOWNLOAD_CANCELLED: &str = "下载已取消";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DownloadControlState {
+    Running,
+    Paused,
+    Cancelled,
+}
+
+struct DownloadControl {
+    state: Mutex<DownloadControlState>,
+    changed: Notify,
+}
+
+impl DownloadControl {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(DownloadControlState::Running),
+            changed: Notify::new(),
+        }
+    }
+}
+
+fn active_downloads() -> &'static Mutex<HashMap<String, Arc<DownloadControl>>> {
+    static ACTIVE_DOWNLOADS: OnceLock<Mutex<HashMap<String, Arc<DownloadControl>>>> =
+        OnceLock::new();
+    ACTIVE_DOWNLOADS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn begin_download_control(id: &str) -> Result<Arc<DownloadControl>, String> {
+    if id.trim().is_empty() {
+        return Err("下载任务编号无效".into());
+    }
+
+    let mut downloads = active_downloads()
+        .lock()
+        .map_err(|_| "下载任务状态异常".to_string())?;
+    if downloads.contains_key(id) {
+        return Err("该软件正在下载".into());
+    }
+
+    let control = Arc::new(DownloadControl::new());
+    downloads.insert(id.to_string(), control.clone());
+    Ok(control)
+}
+
+fn finish_download_control(id: &str, control: &Arc<DownloadControl>) {
+    let Ok(mut downloads) = active_downloads().lock() else {
+        return;
+    };
+    let should_remove = downloads
+        .get(id)
+        .map(|current| Arc::ptr_eq(current, control))
+        .unwrap_or(false);
+    if should_remove {
+        downloads.remove(id);
+    }
+}
+
+fn get_download_control(id: &str) -> Result<Arc<DownloadControl>, String> {
+    let downloads = active_downloads()
+        .lock()
+        .map_err(|_| "下载任务状态异常".to_string())?;
+    downloads
+        .get(id)
+        .cloned()
+        .ok_or_else(|| "当前没有可控制的下载任务".to_string())
+}
+
+fn current_download_state(control: &DownloadControl) -> Result<DownloadControlState, String> {
+    control
+        .state
+        .lock()
+        .map(|state| *state)
+        .map_err(|_| "下载任务状态异常".to_string())
+}
+
+fn set_download_control_state(id: &str, next_state: DownloadControlState) -> Result<(), String> {
+    let control = get_download_control(id)?;
+    {
+        let mut state = control
+            .state
+            .lock()
+            .map_err(|_| "下载任务状态异常".to_string())?;
+        if *state == DownloadControlState::Cancelled {
+            return Err("下载任务已结束".into());
+        }
+        *state = next_state;
+    }
+    control.changed.notify_waiters();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pause_download_cmd(id: String) -> Result<(), String> {
+    set_download_control_state(&id, DownloadControlState::Paused)
+}
+
+#[tauri::command]
+pub fn resume_download_cmd(id: String) -> Result<(), String> {
+    set_download_control_state(&id, DownloadControlState::Running)
+}
+
+#[tauri::command]
+pub fn cancel_download_cmd(id: String) -> Result<(), String> {
+    set_download_control_state(&id, DownloadControlState::Cancelled)
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -117,6 +268,63 @@ pub async fn cache_software_package(
     })
 }
 
+/// 只启动已缓存的 EXE，并把配置好的参数直接传给安装器。
+/// 这里不经过 cmd 或 PowerShell，避免把用户输入当作一段 Shell 脚本执行。
+#[tauri::command]
+pub fn run_silent_installer_cmd(
+    id: String,
+    path: String,
+    arguments: String,
+) -> Result<InstallResult, String> {
+    let package = PathBuf::from(path.trim());
+    if !package.is_file() {
+        return Err("安装包文件不存在，请重新下载".into());
+    }
+
+    let cache_root = data_dir()?.join("packages");
+    let package = package
+        .canonicalize()
+        .map_err(|error| format!("无法读取安装包路径: {error}"))?;
+    let cache_root = cache_root
+        .canonicalize()
+        .map_err(|_| "软件包缓存目录不存在，请先下载安装包".to_string())?;
+    if !package.starts_with(&cache_root) {
+        return Err("只能执行软件管家缓存中的安装包".into());
+    }
+
+    let extension = package
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if !extension.eq_ignore_ascii_case("exe") {
+        return Err("当前静默安装只支持 .exe 安装包".into());
+    }
+
+    let args = parse_silent_install_args(&arguments)?;
+    if args.is_empty() {
+        return Err("这个软件还没有保存静默安装参数".into());
+    }
+
+    let program = package.to_string_lossy().to_string();
+    let mut process = hidden_command(&program);
+    if let Some(parent) = package.parent().filter(|parent| parent.is_dir()) {
+        process.current_dir(parent);
+    }
+    process.args(&args);
+    process
+        .spawn()
+        .map_err(|error| format!("启动静默安装失败: {error}"))?;
+
+    Ok(InstallResult {
+        id,
+        success: true,
+        message: "已启动静默安装，安装器将在后台完成。".into(),
+        shortcut_path: None,
+        package_path: Some(program),
+        used_cache: true,
+    })
+}
+
 fn is_valid_cached_package(path: &Path, expected_size: u64) -> Result<bool, String> {
     if !path.is_file() {
         return Ok(false);
@@ -155,7 +363,14 @@ async fn ensure_cached_package(
         std::fs::remove_file(&temp_path).map_err(|e| format!("清理临时下载失败: {}", e))?;
     }
 
-    download_with_progress(app, id, url, &temp_path).await?;
+    let control = begin_download_control(id)?;
+    let download_result = download_with_progress(app, id, url, &temp_path, &control).await;
+    finish_download_control(id, &control);
+    if let Err(error) = download_result {
+        // 取消或失败都不能保留半截安装包，下一次下载必须重新开始。
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        return Err(error);
+    }
 
     if !is_valid_cached_package(&temp_path, expected_size)? {
         let actual = std::fs::metadata(&temp_path).map(|m| m.len()).unwrap_or(0);
@@ -175,15 +390,34 @@ async fn download_with_progress(
     id: &str,
     url: &str,
     dest: &PathBuf,
+    control: &Arc<DownloadControl>,
 ) -> Result<(), String> {
-    let resp = reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .user_agent("software-manager")
         .build()
-        .map_err(|e| e.to_string())?
-        .get(url)
-        .send()
-        .await
         .map_err(|e| e.to_string())?;
+    let request = client.get(url).send();
+    tokio::pin!(request);
+
+    // 在建立连接阶段也响应暂停和取消；取消会直接丢弃请求 future。
+    let resp = loop {
+        let notified = control.changed.notified();
+        tokio::pin!(notified);
+        match current_download_state(control)? {
+            DownloadControlState::Cancelled => return Err(DOWNLOAD_CANCELLED.into()),
+            DownloadControlState::Paused => {
+                (&mut notified).await;
+                continue;
+            }
+            DownloadControlState::Running => {}
+        }
+
+        tokio::select! {
+            biased;
+            _ = &mut notified => continue,
+            result = &mut request => break result.map_err(|e| e.to_string())?,
+        }
+    };
 
     if !resp.status().is_success() {
         return Err(format!("下载失败: HTTP {}", resp.status()));
@@ -197,7 +431,26 @@ async fn download_with_progress(
         .map_err(|e| e.to_string())?;
     let mut downloaded: u64 = 0;
 
-    while let Some(chunk) = stream.next().await {
+    loop {
+        // 先注册通知，再读取状态，避免暂停按钮刚点击就丢失通知。
+        let notified = control.changed.notified();
+        tokio::pin!(notified);
+        match current_download_state(control)? {
+            DownloadControlState::Cancelled => return Err(DOWNLOAD_CANCELLED.into()),
+            DownloadControlState::Paused => {
+                (&mut notified).await;
+                continue;
+            }
+            DownloadControlState::Running => {}
+        }
+
+        let Some(chunk) = (tokio::select! {
+            biased;
+            _ = &mut notified => continue,
+            chunk = stream.next() => chunk,
+        }) else {
+            break;
+        };
         let chunk = chunk.map_err(|e| e.to_string())?;
         file.write_all(&chunk).await.map_err(|e| e.to_string())?;
         downloaded += chunk.len() as u64;
@@ -712,6 +965,22 @@ fn parse_windows_command_line(command: &str) -> Result<Vec<String>, String> {
     Ok(vec![command.to_string()])
 }
 
+fn parse_silent_install_args(arguments: &str) -> Result<Vec<String>, String> {
+    let arguments = arguments.trim();
+    if arguments.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let command_line = format!(r#""installer.exe" {arguments}"#);
+    let mut parts = parse_windows_command_line(&command_line)
+        .map_err(|error| format!("静默安装参数格式无效: {error}"))?;
+    if parts.is_empty() {
+        return Err("静默安装参数格式无效".into());
+    }
+    parts.remove(0);
+    Ok(parts)
+}
+
 fn shell_quote_json(value: &str) -> Result<String, String> {
     serde_json::to_string(value).map_err(|e| e.to_string())
 }
@@ -930,6 +1199,9 @@ pub fn uninstall_software(id: String) -> Result<InstallResult, String> {
 pub fn is_software_installed(id: String) -> Result<bool, String> {
     let work_dir = get_install_base().join(&id);
 
+    if id == "chatgpt" {
+        return Ok(microsoft_store_package_version("OpenAI.Codex").is_some());
+    }
     if id == "wegame" {
         return Ok(portable_wegame_exe_exists(&work_dir) || wegame_installed_outside_portable());
     }
@@ -940,4 +1212,51 @@ pub fn is_software_installed(id: String) -> Result<bool, String> {
     let has_dir = portable_app_installed(&id, &work_dir);
     let shortcut = shortcut_path_for_id(&id)?;
     Ok(has_dir || shortcut.exists())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::{
+        begin_download_control, current_download_state, finish_download_control,
+        parse_silent_install_args, set_download_control_state, DownloadControlState,
+    };
+
+    #[test]
+    fn download_control_tracks_pause_and_cancel() {
+        let id = "installer-download-control-test";
+        let control = begin_download_control(id).expect("control should start");
+
+        set_download_control_state(id, DownloadControlState::Paused)
+            .expect("download should pause");
+        assert_eq!(
+            current_download_state(&control).expect("state should be readable"),
+            DownloadControlState::Paused
+        );
+
+        set_download_control_state(id, DownloadControlState::Cancelled)
+            .expect("download should cancel");
+        assert_eq!(
+            current_download_state(&control).expect("state should be readable"),
+            DownloadControlState::Cancelled
+        );
+
+        finish_download_control(id, &control);
+    }
+
+    #[test]
+    fn preserves_quoted_inno_setup_task_argument() {
+        let args = parse_silent_install_args(
+            r#"/VERYSILENT /SUPPRESSMSGBOXES /MERGETASKS="desktopicon,!associatewithfiles""#,
+        )
+        .expect("silent args should parse");
+
+        assert_eq!(
+            args,
+            vec![
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/MERGETASKS=desktopicon,!associatewithfiles",
+            ]
+        );
+    }
 }

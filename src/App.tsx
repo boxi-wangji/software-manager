@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type PointerEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import amdAdrenalinIcon from "./assets/software-icons/amd-adrenalin.png";
+import chatGptIcon from "./assets/software-icons/chatgpt.png";
+import leagueAkariIcon from "./assets/software-icons/leagueakari.png";
+import quickClipboardIcon from "./assets/software-icons/quickclipboard.png";
+import sTranslateIcon from "./assets/software-icons/stranslate.png";
+import weGameIcon from "./assets/software-icons/wegame.png";
+import wingetIcon from "./assets/software-icons/winget.png";
 import "./App.css";
 
 /*  data types  */
@@ -21,9 +28,10 @@ interface SoftwareInfo {
   release_url: string;
   published_at: string;
   portable: SoftwareAsset | null;
-  install_kind: "portable" | "installer" | "download";
-  source_kind: "github" | "official";
+  install_kind: "portable" | "installer" | "download" | "store";
+  source_kind: "github" | "official" | "store";
   ocr_install: boolean;
+  silent_install_args: string;
   icon_path: string;
 }
 
@@ -45,6 +53,23 @@ interface PackageCacheInfo {
   size: number;
 }
 
+interface PackageLaunchResult {
+  message: string;
+  tracked: boolean;
+}
+
+interface WingetStatus {
+  available: boolean;
+  version: string;
+  message: string;
+}
+
+interface WingetSearchResult {
+  name: string;
+  packageId: string;
+  version: string;
+}
+
 interface DownloadProgress {
   id: string;
   downloaded: number;
@@ -52,7 +77,7 @@ interface DownloadProgress {
   percent: number;
 }
 
-type InstallState = "downloading" | "uninstalling" | "installing" | "checking" | "done" | "error" | "uninstall_failed";
+type InstallState = "downloading" | "paused" | "cancelling" | "cancelled" | "uninstalling" | "installing" | "checking" | "done" | "error" | "uninstall_failed";
 
 interface InstallStatus {
   state: InstallState;
@@ -147,6 +172,7 @@ interface CustomSourceForm {
   page_url: string;
   version: string;
   file_name: string;
+  silent_install_args: string;
   icon_path: string;
 }
 
@@ -158,12 +184,19 @@ interface DownloadCandidate {
   source_page: string;
   matcher: string;
   score: number;
+  display_name: string;
+}
+
+interface CustomSourceScanTarget {
+  source_kind: CustomSourceForm["source_kind"];
+  source_url: string;
+  repo: string;
 }
 
 const DEFAULT_CUSTOM_SOURCE_FORM: CustomSourceForm = {
   id: "",
   display_name: "",
-  source_kind: "github",
+  source_kind: "direct",
   repo: "",
   asset_match: "",
   exe_match: "",
@@ -171,10 +204,20 @@ const DEFAULT_CUSTOM_SOURCE_FORM: CustomSourceForm = {
   page_url: "",
   version: "",
   file_name: "",
+  silent_install_args: "",
   icon_path: "",
 };
 
-const BUILT_IN_SOFTWARE_IDS = new Set(["stranslate", "quickclipboard", "leagueakari", "wegame", "amd-adrenalin", "winget"]);
+const BUILT_IN_SOFTWARE_IDS = new Set(["stranslate", "quickclipboard", "leagueakari", "wegame", "amd-adrenalin", "chatgpt"]);
+
+const BUILT_IN_ICON_SOURCES: Record<string, string> = {
+  stranslate: sTranslateIcon,
+  quickclipboard: quickClipboardIcon,
+  leagueakari: leagueAkariIcon,
+  wegame: weGameIcon,
+  "amd-adrenalin": amdAdrenalinIcon,
+  chatgpt: chatGptIcon,
+};
 
 function slugifySourceId(name: string) {
   const slug = name
@@ -251,7 +294,1292 @@ async function loadRunnableAutomationSteps() {
   return steps.map(normalizeStep).filter((step) => step.enabled !== false);
 }
 
-type NavId = "library" | "packages" | "automation" | "settings";
+type NavId = "library" | "packages" | "winget" | "automation" | "settings";
+
+type ManualWingetAction = "search" | "install" | "upgrade";
+type CardDropPosition = "before" | "after";
+
+const WINGET_MANUAL_ACTIONS: Array<{
+  id: ManualWingetAction;
+  label: string;
+}> = [
+  { id: "search", label: "查找" },
+  { id: "install", label: "安装" },
+  { id: "upgrade", label: "更新" },
+];
+
+interface WingetUserCard {
+  id: string;
+  title: string;
+  command: string;
+  categoryId: string | null;
+}
+
+function normalizeHttpLink(input: string) {
+  const value = input.trim();
+  if (!value || /^https?:\/\//i.test(value)) return value;
+  return `https://${value}`;
+}
+
+function githubRepoFromLink(input: string) {
+  const trimmed = input.trim();
+  const looksLikeGithubUrl = /^(?:https?:\/\/)?github\.com\//i.test(trimmed);
+  const looksLikeRepo = /^[a-z0-9_.-]+\/[a-z0-9_.-]+\/?$/i.test(trimmed);
+  return looksLikeGithubUrl || looksLikeRepo ? parseGithubRepo(trimmed) : "";
+}
+
+interface WingetUserCategory {
+  id: string;
+  name: string;
+}
+
+const WINGET_USER_CARDS_STORAGE_KEY = "software-manager.winget-user-cards.v1";
+const WINGET_USER_CATEGORIES_STORAGE_KEY = "software-manager.winget-user-categories.v1";
+
+function loadWingetUserCards(): WingetUserCard[] {
+  try {
+    const raw = window.localStorage.getItem(WINGET_USER_CARDS_STORAGE_KEY);
+    if (!raw) return [];
+    const cards: unknown = JSON.parse(raw);
+    if (!Array.isArray(cards)) return [];
+    return cards.flatMap((card): WingetUserCard[] => {
+      if (!card || typeof card !== "object") return [];
+      const { id, title, command, categoryId } = card as Record<string, unknown>;
+      if (typeof id !== "string" || typeof title !== "string" || typeof command !== "string") return [];
+      return [{ id, title, command, categoryId: typeof categoryId === "string" ? categoryId : null }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function loadWingetUserCategories(): WingetUserCategory[] {
+  try {
+    const raw = window.localStorage.getItem(WINGET_USER_CATEGORIES_STORAGE_KEY);
+    if (!raw) return [];
+    const categories: unknown = JSON.parse(raw);
+    if (!Array.isArray(categories)) return [];
+    return categories.flatMap((category): WingetUserCategory[] => {
+      if (!category || typeof category !== "object") return [];
+      const { id, name } = category as Record<string, unknown>;
+      if (typeof id !== "string" || typeof name !== "string" || !name.trim()) return [];
+      return [{ id, name: name.trim() }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function createWingetUserCardId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `winget-card-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function createWingetUserCategoryId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `winget-category-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+
+function isLikelyWingetPackageId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value) && (value.includes(".") || /^[A-Z0-9]{10,}$/.test(value));
+}
+
+function isFullWingetCommand(value: string): boolean {
+  return /^winget(?:\.exe)?(?:\s|$)/i.test(value.trim());
+}
+
+function getFullWingetCommandAction(value: string): ManualWingetAction | null {
+  const action = value.trim().match(/^winget(?:\.exe)?\s+(search|install|upgrade)\b/i)?.[1]?.toLowerCase();
+  return action === "search" || action === "install" || action === "upgrade" ? action : null;
+}
+
+function getFullWingetCommandTarget(value: string): string {
+  const match = value.match(/(?:^|\s)--(?:id|name)\s+(?:"([^"]+)"|'([^']+)'|([^\s`]+))/i);
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? "";
+}
+
+function getWingetSearchTarget(value: string): string {
+  const input = value.trim();
+  if (!input) return "";
+
+  const optionMatch = input.match(/(?:^|\s)--(?:id|name|query|moniker|tag|command)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s`]+))/i);
+  if (optionMatch) return optionMatch[1] ?? optionMatch[2] ?? optionMatch[3] ?? "";
+  if (!isFullWingetCommand(input)) return input;
+
+  const positional = input
+    .replace(/^winget(?:\.exe)?\s+(?:search|install|upgrade|uninstall)\b/i, "")
+    .trim()
+    .match(/^(?:"([^"]+)"|'([^']+)'|([^\s`]+))/);
+  return positional?.[1] ?? positional?.[2] ?? positional?.[3] ?? "";
+}
+
+function replaceFullWingetCommandTarget(command: string, packageId: string): string {
+  const target = packageId.trim();
+  if (!target || !isFullWingetCommand(command)) return command;
+
+  const optionTarget = /(--(?:id|name)(?:=|\s+))(?:"[^"]+"|'[^']+'|[^\s`]+)/i;
+  if (optionTarget.test(command)) {
+    return command.replace(optionTarget, `$1${target}`);
+  }
+
+  const positionalTarget = /^(winget(?:\.exe)?\s+(?:install|upgrade|uninstall)\s+)(?:"[^"]+"|'[^']+'|[^\s`]+)/i;
+  if (positionalTarget.test(command)) {
+    return command.replace(positionalTarget, `$1--id ${target} -e`);
+  }
+
+  return command;
+}
+
+function makeManualWingetCommand(action: ManualWingetAction, value: string): string {
+  const input = value.trim();
+  if (!input) return "";
+  if (isFullWingetCommand(input)) return input;
+  if (action === "search") return `winget search --query "${input}"`;
+  const target = isLikelyWingetPackageId(input) ? `--id ${input} -e` : `--name "${input}" -e`;
+  return `winget ${action} ${target}`;
+}
+
+function makeWingetCardTitle(action: ManualWingetAction, value: string): string {
+  const target = value.trim();
+  if (isFullWingetCommand(target)) {
+    const commandAction = getFullWingetCommandAction(target);
+    const commandTarget = getFullWingetCommandTarget(target);
+    if (commandAction === "search") return commandTarget ? `查找 ${commandTarget}` : "自定义 Winget 查询";
+    if (commandAction === "install") return commandTarget ? `安装 ${commandTarget}` : "自定义 Winget 安装";
+    if (commandAction === "upgrade") return commandTarget ? `更新 ${commandTarget}` : "自定义 Winget 更新";
+    return "自定义 Winget 命令";
+  }
+  if (action === "search") return target ? `查找 ${target}` : "查找软件";
+  if (action === "install") return target ? `安装 ${target}` : "安装软件";
+  return target ? `更新 ${target}` : "更新软件";
+}
+
+interface WingetCardLayoutSlot {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface WingetCategoryDragCandidate {
+  id: string;
+  index: number;
+  element: HTMLElement;
+  startX: number;
+  startY: number;
+}
+
+function captureWingetCardLayouts(grid: HTMLElement): WingetCardLayoutSlot[] {
+  return Array.from(grid.querySelectorAll<HTMLElement>("[data-winget-card-index]")).map((card) => {
+    const rect = card.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  });
+}
+
+function captureWingetCategoryLayouts(list: HTMLElement): WingetCardLayoutSlot[] {
+  return Array.from(list.querySelectorAll<HTMLElement>("[data-winget-category-index]")).map((category) => {
+    const rect = category.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  });
+}
+
+function resolveWingetCardDropIndex(clientX: number, clientY: number, layouts: WingetCardLayoutSlot[]): number {
+  if (layouts.length === 0) return 0;
+  let closestIndex = 0;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  layouts.forEach((layout, index) => {
+    const centerX = layout.left + layout.width / 2;
+    const centerY = layout.top + layout.height / 2;
+    const distance = (clientX - centerX) ** 2 + (clientY - centerY) ** 2;
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestIndex = index;
+    }
+  });
+  return closestIndex;
+}
+
+function getWingetCardShift(
+  index: number,
+  from: number,
+  over: number,
+  layouts: WingetCardLayoutSlot[],
+): { x: number; y: number } {
+  if (from === over) return { x: 0, y: 0 };
+  const current = layouts[index];
+  if (!current) return { x: 0, y: 0 };
+  const target = from < over && index > from && index <= over
+    ? layouts[index - 1]
+    : from > over && index >= over && index < from
+      ? layouts[index + 1]
+      : null;
+  if (!target) return { x: 0, y: 0 };
+  return { x: target.left - current.left, y: target.top - current.top };
+}
+
+const WINGET_CARD_DRAG_SETTLE_MS = 300;
+const WINGET_CATEGORY_DRAG_START_DISTANCE = 6;
+
+const WingetPage = memo(function WingetPage({
+  status,
+  checking,
+  onRefresh,
+  onOpenTerminal,
+  onSearch,
+}: {
+  status: WingetStatus | null;
+  checking: boolean;
+  onRefresh: () => Promise<void>;
+  onOpenTerminal: () => Promise<void>;
+  onSearch: (query: string) => Promise<WingetSearchResult[]>;
+}) {
+  const available = status?.available === true;
+  const statusLabel = checking ? "检测中" : status ? (available ? "可用" : "未检测到") : "待检测";
+  const [manualAction, setManualAction] = useState<ManualWingetAction>("search");
+  const [manualValue, setManualValue] = useState("");
+  const [searchResults, setSearchResults] = useState<WingetSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchMessage, setSearchMessage] = useState("");
+  const [userCards, setUserCards] = useState<WingetUserCard[]>(loadWingetUserCards);
+  const [userCategories, setUserCategories] = useState<WingetUserCategory[]>(loadWingetUserCategories);
+  const [activeCategoryId, setActiveCategoryId] = useState("all");
+  const [selectedCardIds, setSelectedCardIds] = useState<string[]>([]);
+  const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
+  const [cardDragFromIdx, setCardDragFromIdx] = useState<number | null>(null);
+  const [cardDragOverIdx, setCardDragOverIdx] = useState<number | null>(null);
+  const [cardDragPointer, setCardDragPointer] = useState({ x: 0, y: 0 });
+  const [cardDragGhostSize, setCardDragGhostSize] = useState({ width: 0, height: 0 });
+  const [cardDragSettling, setCardDragSettling] = useState(false);
+  const [draggingCategoryId, setDraggingCategoryId] = useState<string | null>(null);
+  const [categoryDragPending, setCategoryDragPending] = useState(false);
+  const [categoryDragFromIdx, setCategoryDragFromIdx] = useState<number | null>(null);
+  const [categoryDragOverIdx, setCategoryDragOverIdx] = useState<number | null>(null);
+  const [categoryDragPointer, setCategoryDragPointer] = useState({ x: 0, y: 0 });
+  const [categoryDragGhostSize, setCategoryDragGhostSize] = useState({ width: 0, height: 0 });
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [draftCategoryName, setDraftCategoryName] = useState("");
+  const [categoryError, setCategoryError] = useState("");
+  const [addingCard, setAddingCard] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftCommand, setDraftCommand] = useState("");
+  const [draftCategoryId, setDraftCategoryId] = useState("");
+  const [cardError, setCardError] = useState("");
+  const [editingCardId, setEditingCardId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editCommand, setEditCommand] = useState("");
+  const [editCategoryId, setEditCategoryId] = useState("");
+  const [editCardError, setEditCardError] = useState("");
+  const [copyState, setCopyState] = useState<{ id: string; ok: boolean } | null>(null);
+  const [saveState, setSaveState] = useState<"saved" | "exists" | null>(null);
+  const [combineState, setCombineState] = useState<"saved" | null>(null);
+  const copyTimer = useRef<number | null>(null);
+  const saveTimer = useRef<number | null>(null);
+  const combineTimer = useRef<number | null>(null);
+  const cardDragFromIdxRef = useRef<number | null>(null);
+  const cardDragOverIdxRef = useRef<number | null>(null);
+  const cardDragOffsetRef = useRef({ x: 24, y: 22 });
+  const cardDragRafRef = useRef<number | null>(null);
+  const cardDragSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cardDragLayoutsRef = useRef<WingetCardLayoutSlot[] | null>(null);
+  const cardDragOrderRef = useRef<string[] | null>(null);
+  const categoryDragFromIdxRef = useRef<number | null>(null);
+  const categoryDragOverIdxRef = useRef<number | null>(null);
+  const categoryDragOffsetRef = useRef({ x: 16, y: 15 });
+  const categoryDragRafRef = useRef<number | null>(null);
+  const categoryDragLayoutsRef = useRef<WingetCardLayoutSlot[] | null>(null);
+  const categoryDragOrderRef = useRef<string[] | null>(null);
+  const categoryDragCandidateRef = useRef<WingetCategoryDragCandidate | null>(null);
+  const categoryDragClickSuppressRef = useRef(false);
+  const categoryDragClickResetTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+    if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
+    if (combineTimer.current !== null) window.clearTimeout(combineTimer.current);
+    if (cardDragRafRef.current !== null) cancelAnimationFrame(cardDragRafRef.current);
+    if (cardDragSettleTimerRef.current !== null) window.clearTimeout(cardDragSettleTimerRef.current);
+    if (categoryDragRafRef.current !== null) cancelAnimationFrame(categoryDragRafRef.current);
+    if (categoryDragClickResetTimerRef.current !== null) window.clearTimeout(categoryDragClickResetTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(WINGET_USER_CARDS_STORAGE_KEY, JSON.stringify(userCards));
+    } catch {
+      // The page stays usable even if browser storage is unavailable.
+    }
+  }, [userCards]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(WINGET_USER_CATEGORIES_STORAGE_KEY, JSON.stringify(userCategories));
+    } catch {
+      // The page stays usable even if browser storage is unavailable.
+    }
+  }, [userCategories]);
+
+  const manualCommand = useMemo(
+    () => makeManualWingetCommand(manualAction, manualValue),
+    [manualAction, manualValue],
+  );
+  const canSaveManualCommand = Boolean(manualValue.trim());
+  const visibleUserCards = useMemo(() => {
+    if (activeCategoryId === "all") return userCards;
+    if (activeCategoryId === "uncategorized") return userCards.filter((card) => !card.categoryId);
+    return userCards.filter((card) => card.categoryId === activeCategoryId);
+  }, [activeCategoryId, userCards]);
+  const draggedUserCard = draggingCardId ? userCards.find((card) => card.id === draggingCardId) ?? null : null;
+  const draggedUserCategory = draggingCategoryId ? userCategories.find((category) => category.id === draggingCategoryId) ?? null : null;
+  const isCardDragActive = draggingCardId !== null || cardDragSettling;
+  const selectedCards = useMemo(
+    () => userCards.filter((card) => selectedCardIds.includes(card.id)),
+    [selectedCardIds, userCards],
+  );
+  const combinedCommand = useMemo(
+    () => selectedCards.map((card) => card.command.trim()).filter(Boolean).join("\n\n"),
+    [selectedCards],
+  );
+
+  const copyCommand = useCallback(async (id: string, command: string) => {
+    if (!command.trim()) return;
+    if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopyState({ id, ok: true });
+    } catch {
+      setCopyState({ id, ok: false });
+    }
+    copyTimer.current = window.setTimeout(() => setCopyState(null), 1400);
+  }, []);
+
+  const selectCategory = useCallback((categoryId: string) => {
+    setActiveCategoryId(categoryId);
+    setSelectedCardIds([]);
+  }, []);
+
+  const selectCategoryFromFilter = useCallback((categoryId: string) => {
+    if (categoryDragClickSuppressRef.current) {
+      categoryDragClickSuppressRef.current = false;
+      return;
+    }
+    selectCategory(categoryId);
+  }, [selectCategory]);
+
+  const startAddingCategory = useCallback(() => {
+    setAddingCard(false);
+    setDraftTitle("");
+    setDraftCommand("");
+    setDraftCategoryId("");
+    setCardError("");
+    setEditingCardId(null);
+    setEditTitle("");
+    setEditCommand("");
+    setEditCategoryId("");
+    setEditCardError("");
+    setCategoryError("");
+    setAddingCategory(true);
+  }, []);
+
+  const cancelAddingCategory = useCallback(() => {
+    setAddingCategory(false);
+    setDraftCategoryName("");
+    setCategoryError("");
+  }, []);
+
+  const addUserCategory = useCallback((event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = draftCategoryName.trim();
+    if (!name) {
+      setCategoryError("分类名称要填写。");
+      return;
+    }
+    if (userCategories.some((category) => category.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      setCategoryError("这个分类已经有了。");
+      return;
+    }
+    const category = { id: createWingetUserCategoryId(), name };
+    setUserCategories((current) => [...current, category]);
+    setActiveCategoryId(category.id);
+    setSelectedCardIds([]);
+    cancelAddingCategory();
+  }, [cancelAddingCategory, draftCategoryName, userCategories]);
+
+  const deleteUserCategory = useCallback((category: WingetUserCategory) => {
+    if (!window.confirm(`删除分类「${category.name}」？其中的卡片会变为未分类。`)) return;
+    setUserCategories((current) => current.filter((item) => item.id !== category.id));
+    setUserCards((current) => current.map((card) => (
+      card.categoryId === category.id ? { ...card, categoryId: null } : card
+    )));
+    setActiveCategoryId((current) => current === category.id ? "all" : current);
+    setDraftCategoryId((current) => current === category.id ? "" : current);
+    setEditCategoryId((current) => current === category.id ? "" : current);
+  }, []);
+
+  const startAddingCard = useCallback(() => {
+    setAddingCategory(false);
+    setDraftCategoryName("");
+    setCategoryError("");
+    setCardError("");
+    setEditingCardId(null);
+    setEditTitle("");
+    setEditCommand("");
+    setEditCategoryId("");
+    setEditCardError("");
+    setDraftCategoryId(userCategories.some((category) => category.id === activeCategoryId) ? activeCategoryId : "");
+    setAddingCard(true);
+  }, [activeCategoryId, userCategories]);
+
+  const cancelAddingCard = useCallback(() => {
+    setAddingCard(false);
+    setDraftTitle("");
+    setDraftCommand("");
+    setDraftCategoryId("");
+    setCardError("");
+  }, []);
+
+  const startEditingCard = useCallback((card: WingetUserCard) => {
+    setAddingCategory(false);
+    setDraftCategoryName("");
+    setCategoryError("");
+    setAddingCard(false);
+    setDraftTitle("");
+    setDraftCommand("");
+    setDraftCategoryId("");
+    setCardError("");
+    setEditingCardId(card.id);
+    setEditTitle(card.title);
+    setEditCommand(card.command);
+    setEditCategoryId(card.categoryId ?? "");
+    setEditCardError("");
+  }, []);
+
+  const cancelEditingCard = useCallback(() => {
+    setEditingCardId(null);
+    setEditTitle("");
+    setEditCommand("");
+    setEditCategoryId("");
+    setEditCardError("");
+  }, []);
+
+  const addUserCard = useCallback((event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const title = draftTitle.trim();
+    const command = draftCommand.trim();
+    if (!title || !command) {
+      setCardError("名称和命令都要填写。");
+      return;
+    }
+    setUserCards((current) => [...current, {
+      id: createWingetUserCardId(),
+      title,
+      command,
+      categoryId: draftCategoryId || null,
+    }]);
+    cancelAddingCard();
+  }, [cancelAddingCard, draftCategoryId, draftCommand, draftTitle]);
+
+  const updateUserCard = useCallback((event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const title = editTitle.trim();
+    const command = editCommand.trim();
+    if (!editingCardId || !title || !command) {
+      setEditCardError("名称和命令都要填写。");
+      return;
+    }
+    setUserCards((current) => current.map((card) => (
+      card.id === editingCardId ? { ...card, title, command, categoryId: editCategoryId || null } : card
+    )));
+    cancelEditingCard();
+  }, [cancelEditingCard, editCategoryId, editCommand, editTitle, editingCardId]);
+
+  const deleteUserCard = useCallback((card: WingetUserCard) => {
+    if (!window.confirm(`删除「${card.title}」？`)) return;
+    setUserCards((current) => current.filter((item) => item.id !== card.id));
+    setSelectedCardIds((current) => current.filter((id) => id !== card.id));
+    if (editingCardId === card.id) cancelEditingCard();
+  }, [cancelEditingCard, editingCardId]);
+
+  const toggleUserCardSelection = useCallback((id: string) => {
+    setSelectedCardIds((current) => (
+      current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
+    ));
+  }, []);
+
+  const moveUserCard = useCallback((sourceId: string, targetId: string, position: CardDropPosition) => {
+    if (sourceId === targetId) return;
+    setUserCards((current) => {
+      const sourceIndex = current.findIndex((card) => card.id === sourceId);
+      if (sourceIndex < 0) return current;
+      const next = [...current];
+      const [sourceCard] = next.splice(sourceIndex, 1);
+      const targetIndex = next.findIndex((card) => card.id === targetId);
+      if (targetIndex < 0 || !sourceCard) return current;
+      next.splice(position === "after" ? targetIndex + 1 : targetIndex, 0, sourceCard);
+      return next;
+    });
+  }, []);
+
+  const moveUserCategory = useCallback((sourceId: string, targetId: string, position: CardDropPosition) => {
+    if (sourceId === targetId) return;
+    setUserCategories((current) => {
+      const sourceIndex = current.findIndex((category) => category.id === sourceId);
+      if (sourceIndex < 0) return current;
+      const next = [...current];
+      const [sourceCategory] = next.splice(sourceIndex, 1);
+      const targetIndex = next.findIndex((category) => category.id === targetId);
+      if (targetIndex < 0 || !sourceCategory) return current;
+      next.splice(position === "after" ? targetIndex + 1 : targetIndex, 0, sourceCategory);
+      return next;
+    });
+  }, []);
+
+  const clearUserCardDragState = useCallback(() => {
+    if (cardDragRafRef.current !== null) {
+      cancelAnimationFrame(cardDragRafRef.current);
+      cardDragRafRef.current = null;
+    }
+    if (cardDragSettleTimerRef.current !== null) {
+      window.clearTimeout(cardDragSettleTimerRef.current);
+      cardDragSettleTimerRef.current = null;
+    }
+    cardDragFromIdxRef.current = null;
+    cardDragOverIdxRef.current = null;
+    cardDragLayoutsRef.current = null;
+    cardDragOrderRef.current = null;
+    setDraggingCardId(null);
+    setCardDragFromIdx(null);
+    setCardDragOverIdx(null);
+    setCardDragSettling(false);
+  }, []);
+
+  const clearUserCategoryDragState = useCallback(() => {
+    if (categoryDragRafRef.current !== null) {
+      cancelAnimationFrame(categoryDragRafRef.current);
+      categoryDragRafRef.current = null;
+    }
+    categoryDragFromIdxRef.current = null;
+    categoryDragOverIdxRef.current = null;
+    categoryDragLayoutsRef.current = null;
+    categoryDragOrderRef.current = null;
+    categoryDragCandidateRef.current = null;
+    setDraggingCategoryId(null);
+    setCategoryDragPending(false);
+    setCategoryDragFromIdx(null);
+    setCategoryDragOverIdx(null);
+  }, []);
+
+  const beginUserCardDrag = useCallback((event: PointerEvent<HTMLButtonElement>, id: string, index: number) => {
+    if (event.button !== 0) return;
+    if (cardDragSettleTimerRef.current !== null) clearUserCardDragState();
+    event.preventDefault();
+    event.stopPropagation();
+    const cardElement = event.currentTarget.closest<HTMLElement>("[data-winget-card-id]");
+    if (!cardElement) return;
+    const rect = cardElement.getBoundingClientRect();
+    const grid = cardElement.closest<HTMLElement>(".winget-user-card-grid");
+    cardDragOffsetRef.current = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    setCardDragGhostSize({ width: rect.width, height: rect.height });
+    if (grid) {
+      cardDragLayoutsRef.current = captureWingetCardLayouts(grid);
+      cardDragOrderRef.current = Array.from(grid.querySelectorAll<HTMLElement>("[data-winget-card-id]"))
+        .map((card) => card.dataset.wingetCardId ?? "")
+        .filter(Boolean);
+    }
+    cardDragFromIdxRef.current = index;
+    cardDragOverIdxRef.current = index;
+    setDraggingCardId(id);
+    setCardDragFromIdx(index);
+    setCardDragOverIdx(index);
+    setCardDragPointer({ x: event.clientX, y: event.clientY });
+  }, [clearUserCardDragState]);
+
+  const activateUserCategoryDrag = useCallback((candidate: WingetCategoryDragCandidate, clientX: number, clientY: number) => {
+    const rect = candidate.element.getBoundingClientRect();
+    const list = candidate.element.closest<HTMLElement>(".winget-category-list");
+    categoryDragOffsetRef.current = { x: clientX - rect.left, y: clientY - rect.top };
+    setCategoryDragGhostSize({ width: rect.width, height: rect.height });
+    if (list) {
+      categoryDragLayoutsRef.current = captureWingetCategoryLayouts(list);
+      categoryDragOrderRef.current = Array.from(list.querySelectorAll<HTMLElement>("[data-winget-category-id]"))
+        .map((category) => category.dataset.wingetCategoryId ?? "")
+        .filter(Boolean);
+    }
+    categoryDragFromIdxRef.current = candidate.index;
+    categoryDragOverIdxRef.current = candidate.index;
+    setDraggingCategoryId(candidate.id);
+    setCategoryDragFromIdx(candidate.index);
+    setCategoryDragOverIdx(candidate.index);
+    setCategoryDragPointer({ x: clientX, y: clientY });
+  }, []);
+
+  const beginUserCategoryDrag = useCallback((event: PointerEvent<HTMLButtonElement>, id: string, index: number) => {
+    if (event.button !== 0 || userCategories.length < 2 || draggingCategoryId) return;
+    const categoryElement = event.currentTarget.closest<HTMLElement>("[data-winget-category-id]");
+    if (!categoryElement) return;
+    categoryDragCandidateRef.current = {
+      id,
+      index,
+      element: categoryElement,
+      startX: event.clientX,
+      startY: event.clientY,
+    };
+    setCategoryDragPending(true);
+  }, [draggingCategoryId, userCategories.length]);
+
+  useEffect(() => {
+    if (!categoryDragPending) return;
+
+    const cancelPendingDrag = () => {
+      categoryDragCandidateRef.current = null;
+      setCategoryDragPending(false);
+    };
+
+    const onMove = (event: globalThis.PointerEvent) => {
+      const candidate = categoryDragCandidateRef.current;
+      if (!candidate) return;
+      const distance = Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY);
+      if (distance < WINGET_CATEGORY_DRAG_START_DISTANCE) return;
+
+      event.preventDefault();
+      categoryDragClickSuppressRef.current = true;
+      categoryDragCandidateRef.current = null;
+      setCategoryDragPending(false);
+      activateUserCategoryDrag(candidate, event.clientX, event.clientY);
+    };
+
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", cancelPendingDrag);
+    window.addEventListener("pointercancel", cancelPendingDrag);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", cancelPendingDrag);
+      window.removeEventListener("pointercancel", cancelPendingDrag);
+    };
+  }, [activateUserCategoryDrag, categoryDragPending]);
+
+  useEffect(() => {
+    if (!draggingCardId) return;
+
+    const onMove = (event: globalThis.PointerEvent) => {
+      if (cardDragFromIdxRef.current === null) return;
+      const x = event.clientX;
+      const y = event.clientY;
+      if (cardDragRafRef.current !== null) cancelAnimationFrame(cardDragRafRef.current);
+      cardDragRafRef.current = requestAnimationFrame(() => {
+        setCardDragPointer({ x, y });
+        const layouts = cardDragLayoutsRef.current;
+        if (layouts) {
+          const index = resolveWingetCardDropIndex(x, y, layouts);
+          if (index !== cardDragOverIdxRef.current) {
+            cardDragOverIdxRef.current = index;
+            setCardDragOverIdx(index);
+          }
+        }
+        cardDragRafRef.current = null;
+      });
+    };
+
+    const finish = () => {
+      if (cardDragRafRef.current !== null) {
+        cancelAnimationFrame(cardDragRafRef.current);
+        cardDragRafRef.current = null;
+      }
+      const from = cardDragFromIdxRef.current;
+      const over = cardDragOverIdxRef.current;
+      if (from !== null && over !== null && from !== over) {
+        const order = cardDragOrderRef.current;
+        const sourceId = order?.[from];
+        const targetId = order?.[over];
+        cardDragFromIdxRef.current = null;
+        cardDragOverIdxRef.current = null;
+        cardDragLayoutsRef.current = null;
+        cardDragOrderRef.current = null;
+        setDraggingCardId(null);
+        setCardDragFromIdx(null);
+        setCardDragOverIdx(null);
+        setCardDragSettling(false);
+        if (sourceId && targetId) moveUserCard(sourceId, targetId, from < over ? "after" : "before");
+        return;
+      }
+      if (from !== null) {
+        document.body.classList.remove("is-winget-card-dragging");
+        document.body.style.userSelect = "";
+        cardDragOverIdxRef.current = from;
+        setCardDragOverIdx(from);
+        setCardDragSettling(true);
+        cardDragSettleTimerRef.current = window.setTimeout(() => {
+          clearUserCardDragState();
+        }, WINGET_CARD_DRAG_SETTLE_MS);
+        return;
+      }
+      clearUserCardDragState();
+    };
+
+    document.body.style.userSelect = "none";
+    document.body.classList.add("is-winget-card-dragging");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    return () => {
+      document.body.style.userSelect = "";
+      document.body.classList.remove("is-winget-card-dragging");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+  }, [clearUserCardDragState, draggingCardId, moveUserCard]);
+
+  useEffect(() => {
+    if (!draggingCategoryId) return;
+
+    const onMove = (event: globalThis.PointerEvent) => {
+      if (categoryDragFromIdxRef.current === null) return;
+      const x = event.clientX;
+      const y = event.clientY;
+      if (categoryDragRafRef.current !== null) cancelAnimationFrame(categoryDragRafRef.current);
+      categoryDragRafRef.current = requestAnimationFrame(() => {
+        setCategoryDragPointer({ x, y });
+        const layouts = categoryDragLayoutsRef.current;
+        if (layouts) {
+          const index = resolveWingetCardDropIndex(x, y, layouts);
+          if (index !== categoryDragOverIdxRef.current) {
+            categoryDragOverIdxRef.current = index;
+            setCategoryDragOverIdx(index);
+          }
+        }
+        categoryDragRafRef.current = null;
+      });
+    };
+
+    const finish = () => {
+      if (categoryDragRafRef.current !== null) {
+        cancelAnimationFrame(categoryDragRafRef.current);
+        categoryDragRafRef.current = null;
+      }
+      const from = categoryDragFromIdxRef.current;
+      const over = categoryDragOverIdxRef.current;
+      const order = categoryDragOrderRef.current;
+      const sourceId = from === null ? undefined : order?.[from];
+      const targetId = over === null ? undefined : order?.[over];
+      if (from !== null && over !== null && from !== over && sourceId && targetId) {
+        moveUserCategory(sourceId, targetId, from < over ? "after" : "before");
+      }
+      categoryDragClickSuppressRef.current = true;
+      if (categoryDragClickResetTimerRef.current !== null) {
+        window.clearTimeout(categoryDragClickResetTimerRef.current);
+      }
+      categoryDragClickResetTimerRef.current = window.setTimeout(() => {
+        categoryDragClickSuppressRef.current = false;
+        categoryDragClickResetTimerRef.current = null;
+      }, 0);
+      clearUserCategoryDragState();
+    };
+
+    document.body.style.userSelect = "none";
+    document.body.classList.add("is-winget-category-dragging");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    return () => {
+      document.body.style.userSelect = "";
+      document.body.classList.remove("is-winget-category-dragging");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+  }, [clearUserCategoryDragState, draggingCategoryId, moveUserCategory]);
+
+  const saveSelectedCardsAsCard = useCallback(() => {
+    if (!combinedCommand || selectedCards.length === 0) return;
+    const selectedCategoryIds = new Set(selectedCards.map((card) => card.categoryId ?? ""));
+    const categoryId = selectedCategoryIds.size === 1 ? [...selectedCategoryIds][0] || null : null;
+    if (combineTimer.current !== null) window.clearTimeout(combineTimer.current);
+    setUserCards((current) => [
+      ...current,
+      {
+        id: createWingetUserCardId(),
+        title: `组合命令 ${selectedCards.length} 条`,
+        command: combinedCommand,
+        categoryId,
+      },
+    ]);
+    setSelectedCardIds([]);
+    setCombineState("saved");
+    combineTimer.current = window.setTimeout(() => setCombineState(null), 1400);
+  }, [combinedCommand, selectedCards.length]);
+
+  const chooseManualAction = useCallback((action: ManualWingetAction) => {
+    setManualAction(action);
+    if (action !== "search") {
+      setSearchResults([]);
+      setSearchMessage("");
+    }
+  }, []);
+
+  const changeManualValue = useCallback((value: string) => {
+    setManualValue(value);
+    const action = getFullWingetCommandAction(value);
+    if (action) setManualAction(action);
+    setSearchResults([]);
+    setSearchMessage("");
+  }, []);
+
+  const searchPackages = useCallback(async () => {
+    const query = getWingetSearchTarget(manualValue);
+    if (!query) return;
+    setSearching(true);
+    setSearchResults([]);
+    setSearchMessage("");
+    try {
+      const results = await onSearch(query);
+      setSearchResults(results);
+      if (results.length === 0) setSearchMessage("没有找到匹配的软件。");
+    } catch (error) {
+      setSearchMessage(String(error));
+    } finally {
+      setSearching(false);
+    }
+  }, [manualValue, onSearch]);
+
+  const runManualAction = useCallback((action: ManualWingetAction) => {
+    chooseManualAction(action);
+    if (action === "search") void searchPackages();
+  }, [chooseManualAction, searchPackages]);
+
+  const useSearchResult = useCallback((result: WingetSearchResult) => {
+    setManualAction("install");
+    setManualValue((current) => {
+      const updated = replaceFullWingetCommandTarget(current, result.packageId);
+      return updated === current ? result.packageId : updated;
+    });
+    setSearchResults([]);
+    setSearchMessage("");
+  }, []);
+
+  const saveCurrentCommandAsCard = useCallback(() => {
+    if (!canSaveManualCommand) return;
+    const command = manualCommand.trim();
+    if (!command) return;
+    if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
+    if (userCards.some((card) => card.command === command)) {
+      setSaveState("exists");
+    } else {
+      const categoryId = userCategories.some((category) => category.id === activeCategoryId) ? activeCategoryId : null;
+      setUserCards((current) => [
+        ...current,
+        { id: createWingetUserCardId(), title: makeWingetCardTitle(manualAction, manualValue), command, categoryId },
+      ]);
+      setSaveState("saved");
+    }
+    saveTimer.current = window.setTimeout(() => setSaveState(null), 1400);
+  }, [activeCategoryId, canSaveManualCommand, manualAction, manualCommand, manualValue, userCards, userCategories]);
+
+  return (
+    <div className="page page-stack winget-page">
+      <header className="page-head winget-page-head">
+        <div className="winget-heading">
+          <img className="winget-page-logo" src={wingetIcon} alt="" />
+          <div>
+            <p className="page-kicker">Windows 包管理器</p>
+            <h2>Winget</h2>
+          </div>
+        </div>
+        <button className="btn" type="button" onClick={() => void onRefresh()} disabled={checking}>
+          {checking ? "检测中" : "刷新检测"}
+        </button>
+      </header>
+
+      <section className="winget-status-panel">
+        <div className="winget-status-main">
+          <span className={`winget-status-dot${available ? " is-ready" : ""}`} aria-hidden="true" />
+          <span className="winget-status-label">状态</span>
+          <strong>{statusLabel}</strong>
+          {status?.version && <code>{status.version}</code>}
+        </div>
+        <p>{status?.message ?? "点击刷新检测本机 Winget。"}</p>
+      </section>
+
+      <section className="winget-action-panel">
+        <div>
+          <h3>手动执行</h3>
+          <p>复制命令后，在 PowerShell 7 里自行确认和执行。</p>
+        </div>
+        <div className="winget-action-buttons">
+          <button className="btn btn-primary" type="button" onClick={() => void onOpenTerminal()} disabled={!available || checking}>
+            打开 PowerShell 7
+          </button>
+          <button className="btn" type="button" onClick={() => void openUrl("https://learn.microsoft.com/windows/package-manager/winget/")}>
+            官方文档
+          </button>
+        </div>
+      </section>
+
+      <section className="winget-card-section" aria-label="自己操作">
+        <div className="winget-section-heading">
+          <div>
+            <p className="winget-section-kicker">自己操作</p>
+            <h3>选择软件</h3>
+          </div>
+          <p>输入软件名称、ID 或完整命令，再选择查找、安装或更新。</p>
+        </div>
+
+        <article className="winget-builder-card">
+          <div className="winget-builder-controls">
+            <label className="winget-name-field">
+              <span>软件名称、ID 或 Winget 命令</span>
+              <input
+                className="winget-card-input"
+                value={manualValue}
+                onChange={(event) => changeManualValue(event.target.value)}
+                placeholder="例如：Steam、Valve.Steam 或 winget install --id Valve.Steam -e"
+                aria-label="软件名称、ID 或 Winget 命令"
+                spellCheck={false}
+              />
+            </label>
+            <div className="winget-builder-actions" aria-label="针对软件的操作">
+              {WINGET_MANUAL_ACTIONS.map((action) => (
+                <button
+                  className={`winget-builder-action${manualAction === action.id ? " is-active" : ""}`}
+                  key={action.id}
+                  type="button"
+                  aria-pressed={manualAction === action.id}
+                  onClick={() => runManualAction(action.id)}
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="winget-builder-output">
+            <code title={manualCommand || "填写后生成命令"}>{manualCommand || "填写后生成命令"}</code>
+            <button
+              className={`btn btn-sm winget-card-copy${copyState?.id === "manual-builder" && copyState.ok ? " is-copied" : ""}`}
+              type="button"
+              disabled={!manualCommand}
+              onClick={() => void copyCommand("manual-builder", manualCommand)}
+            >
+              {copyState?.id === "manual-builder" && copyState.ok ? "已复制" : copyState?.id === "manual-builder" && !copyState.ok ? "复制失败" : "复制"}
+            </button>
+            <button
+              className="btn btn-sm"
+              type="button"
+              disabled={!canSaveManualCommand}
+              onClick={saveCurrentCommandAsCard}
+            >
+              {saveState === "saved" ? "已保存" : saveState === "exists" ? "已存在" : "保存当前命令"}
+            </button>
+          </div>
+        </article>
+
+        {manualAction === "search" && (searching || searchMessage || searchResults.length > 0) && (
+          <div className="winget-search-results" aria-live="polite">
+            <div className="winget-search-results-head">
+              <h4>{searching ? "正在查找" : searchResults.length ? `找到 ${searchResults.length} 个软件` : "搜索结果"}</h4>
+              {searchMessage && <span>{searchMessage}</span>}
+            </div>
+            {searchResults.map((result) => (
+              <div className="winget-search-result" key={result.packageId}>
+                <div>
+                  <strong>{result.name}</strong>
+                  <code>{result.packageId}</code>
+                  {result.version && <span>{result.version}</span>}
+                </div>
+                <button className="btn btn-sm btn-primary" type="button" onClick={() => useSearchResult(result)}>
+                  使用此 ID
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="winget-card-section winget-user-card-section" aria-label="用户小卡片">
+        <div className="winget-section-heading winget-user-card-heading">
+          <div>
+            <p className="winget-section-kicker">用户小卡片</p>
+            <h3>我的命令</h3>
+          </div>
+          <button className="btn btn-sm winget-add-card-button" type="button" onClick={startAddingCard} title="新建自定义卡片">
+            <span aria-hidden="true">+</span>
+            新建自定义卡片
+          </button>
+        </div>
+
+        <div className="winget-category-toolbar">
+          <div className="winget-category-list" aria-label="命令分类">
+            <button
+              className={`winget-category-filter${activeCategoryId === "all" ? " is-active" : ""}`}
+              type="button"
+              aria-pressed={activeCategoryId === "all"}
+              onClick={() => selectCategory("all")}
+            >
+              全部 <span>{userCards.length}</span>
+            </button>
+            <button
+              className={`winget-category-filter${activeCategoryId === "uncategorized" ? " is-active" : ""}`}
+              type="button"
+              aria-pressed={activeCategoryId === "uncategorized"}
+              onClick={() => selectCategory("uncategorized")}
+            >
+              未分类 <span>{userCards.filter((card) => !card.categoryId).length}</span>
+            </button>
+            {userCategories.map((category, categoryIndex) => {
+              const isDraggingCategory = draggingCategoryId === category.id;
+              const isCategoryDropTarget = categoryDragOverIdx === categoryIndex
+                && Boolean(draggingCategoryId)
+                && categoryDragOverIdx !== categoryDragFromIdx;
+              return (
+                <div
+                  className={`winget-category-user${isDraggingCategory ? " is-dragging" : ""}${isCategoryDropTarget ? " is-drag-over" : ""}`}
+                  key={category.id}
+                  data-winget-category-id={category.id}
+                  data-winget-category-index={categoryIndex}
+                >
+                  <button
+                    className={`winget-category-filter${activeCategoryId === category.id ? " is-active" : ""}`}
+                    type="button"
+                    aria-pressed={activeCategoryId === category.id}
+                    onPointerDown={(event) => beginUserCategoryDrag(event, category.id, categoryIndex)}
+                    onClick={() => selectCategoryFromFilter(category.id)}
+                    title="点击切换分类；拖动排序"
+                  >
+                    {category.name} <span>{userCards.filter((card) => card.categoryId === category.id).length}</span>
+                  </button>
+                  <button
+                    className="winget-category-delete-button"
+                    type="button"
+                    title="删除分类"
+                    aria-label={`删除分类 ${category.name}`}
+                    onClick={() => deleteUserCategory(category)}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <div className="winget-category-actions">
+            <span className={`winget-selection-count${selectedCards.length > 0 ? " is-active" : ""}`} aria-live="polite">
+              已选 {selectedCards.length} 张
+            </span>
+            <button
+              className={`btn btn-sm winget-selection-copy${copyState?.id === "selected-card-set" && copyState.ok ? " is-copied" : ""}`}
+              type="button"
+              disabled={!combinedCommand}
+              onClick={() => void copyCommand("selected-card-set", combinedCommand)}
+            >
+              {copyState?.id === "selected-card-set" && copyState.ok ? "已复制" : copyState?.id === "selected-card-set" && !copyState.ok ? "复制失败" : "复制组合命令"}
+            </button>
+            <button className="btn btn-sm btn-primary winget-selection-save" type="button" disabled={!combinedCommand} onClick={saveSelectedCardsAsCard}>
+              {combineState === "saved" ? "已生成" : "生成组合卡片"}
+            </button>
+            <button className="btn btn-sm winget-add-category-button" type="button" onClick={startAddingCategory}>
+              <span aria-hidden="true">+</span>
+              新建分类
+            </button>
+          </div>
+        </div>
+
+        {draggingCategoryId && draggedUserCategory && (
+          <div
+            className="winget-category-drag-ghost"
+            aria-hidden="true"
+            style={{
+              width: categoryDragGhostSize.width || undefined,
+              minHeight: categoryDragGhostSize.height || undefined,
+              transform: `translate3d(${categoryDragPointer.x - categoryDragOffsetRef.current.x}px, ${categoryDragPointer.y - categoryDragOffsetRef.current.y}px, 0) scale(1.04)`,
+            }}
+          >
+            <span className="winget-drag-handle-mark" aria-hidden="true" />
+            <strong>{draggedUserCategory.name}</strong>
+          </div>
+        )}
+
+        {addingCategory && (
+          <form className="winget-category-form" onSubmit={addUserCategory}>
+            <input
+              className="winget-card-input"
+              value={draftCategoryName}
+              onChange={(event) => setDraftCategoryName(event.target.value)}
+              placeholder="分类名称，例如：开发环境"
+              aria-label="分类名称"
+              maxLength={30}
+              autoFocus
+            />
+            {categoryError && <span className="winget-card-form-error">{categoryError}</span>}
+            <div className="winget-card-form-actions">
+              <button className="btn btn-sm btn-primary" type="submit">创建分类</button>
+              <button className="btn btn-sm" type="button" onClick={cancelAddingCategory}>取消</button>
+            </div>
+          </form>
+        )}
+
+        {addingCard && (
+          <form className="winget-card-form" onSubmit={addUserCard}>
+            <input
+              className="winget-card-input"
+              value={draftTitle}
+              onChange={(event) => setDraftTitle(event.target.value)}
+              placeholder="卡片名称，例如：安装 Chrome"
+              aria-label="卡片名称"
+              autoFocus
+            />
+            <select
+              className="winget-card-input winget-card-category-select"
+              value={draftCategoryId}
+              onChange={(event) => setDraftCategoryId(event.target.value)}
+              aria-label="卡片分类"
+            >
+              <option value="">未分类</option>
+              {userCategories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}
+            </select>
+            <textarea
+              className="winget-card-input winget-card-form-command"
+              value={draftCommand}
+              onChange={(event) => setDraftCommand(event.target.value)}
+              placeholder="命令，例如：winget install Google.Chrome"
+              aria-label="卡片命令"
+              spellCheck={false}
+            />
+            <div className="winget-card-form-actions">
+              {cardError && <span className="winget-card-form-error">{cardError}</span>}
+              <button className="btn btn-sm btn-primary" type="submit">创建卡片</button>
+              <button className="btn btn-sm" type="button" onClick={cancelAddingCard}>取消</button>
+            </div>
+          </form>
+        )}
+
+        {visibleUserCards.length > 0 && (
+          <div className={`winget-user-card-grid${isCardDragActive ? " is-reordering" : ""}`}>
+            {visibleUserCards.map((card, cardIndex) => {
+              const cardId = `user-${card.id}`;
+              const copyResult = copyState?.id === cardId ? copyState.ok : null;
+              const isDraggingCard = draggingCardId === card.id || (cardDragSettling && cardDragFromIdx === cardIndex);
+              const shift = isCardDragActive && cardDragFromIdx !== null && cardDragOverIdx !== null && !isDraggingCard
+                ? getWingetCardShift(cardIndex, cardDragFromIdx, cardDragOverIdx, cardDragLayoutsRef.current ?? [])
+                : { x: 0, y: 0 };
+              const cardStyle = shift.x || shift.y ? { transform: `translate3d(${shift.x}px, ${shift.y}px, 0)` } : undefined;
+              if (editingCardId === card.id) {
+                return (
+                  <form className="winget-user-card winget-user-card-editing" key={card.id} onSubmit={updateUserCard}>
+                    <input
+                      className="winget-card-input"
+                      value={editTitle}
+                      onChange={(event) => setEditTitle(event.target.value)}
+                      aria-label="卡片名称"
+                      autoFocus
+                    />
+                    <select
+                      className="winget-card-input winget-card-category-select"
+                      value={editCategoryId}
+                      onChange={(event) => setEditCategoryId(event.target.value)}
+                      aria-label="卡片分类"
+                    >
+                      <option value="">未分类</option>
+                      {userCategories.map((category) => <option value={category.id} key={category.id}>{category.name}</option>)}
+                    </select>
+                    <textarea
+                      className="winget-card-input winget-card-form-command"
+                      value={editCommand}
+                      onChange={(event) => setEditCommand(event.target.value)}
+                      aria-label="卡片命令"
+                      spellCheck={false}
+                    />
+                    <div className="winget-card-form-actions">
+                      {editCardError && <span className="winget-card-form-error">{editCardError}</span>}
+                      <button className="btn btn-sm btn-primary" type="submit">保存</button>
+                      <button className="btn btn-sm" type="button" onClick={cancelEditingCard}>取消</button>
+                    </div>
+                  </form>
+                );
+              }
+              return (
+                <article
+                  className={`winget-user-card${isDraggingCard ? " is-dragging" : ""}${cardDragOverIdx === cardIndex && draggingCardId && cardDragOverIdx !== cardDragFromIdx ? " is-drag-over" : ""}`}
+                  key={card.id}
+                  data-winget-card-id={card.id}
+                  data-winget-card-index={cardIndex}
+                  style={cardStyle}
+                >
+                  <div className="winget-user-card-top">
+                    <button
+                      className="winget-drag-handle"
+                      type="button"
+                      onPointerDown={(event) => beginUserCardDrag(event, card.id, cardIndex)}
+                      title="拖动卡片排序"
+                      aria-label={`拖动 ${card.title} 排序`}
+                    >
+                      <span className="winget-drag-handle-mark" aria-hidden="true" />
+                    </button>
+                    <h4 title={card.title}>{card.title}</h4>
+                  </div>
+                  <div className="winget-user-card-footer">
+                    <button
+                      className={`btn btn-sm winget-card-copy${copyResult === true ? " is-copied" : ""}`}
+                      type="button"
+                      onClick={() => void copyCommand(cardId, card.command)}
+                    >
+                      {copyResult === true ? "已复制" : copyResult === false ? "复制失败" : "复制"}
+                    </button>
+                    <div className="winget-user-card-tools">
+                      <label className="winget-select-card" title={`选择 ${card.title}`}>
+                        <input
+                          type="checkbox"
+                          checked={selectedCardIds.includes(card.id)}
+                          onChange={() => toggleUserCardSelection(card.id)}
+                          aria-label={`选择 ${card.title}`}
+                        />
+                      </label>
+                      <button
+                        className="winget-edit-card-button"
+                        type="button"
+                        onClick={() => startEditingCard(card)}
+                        title="编辑卡片"
+                        aria-label={`编辑 ${card.title}`}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        className="winget-delete-card-button"
+                        type="button"
+                        onClick={() => deleteUserCard(card)}
+                        title="删除卡片"
+                        aria-label={`删除 ${card.title}`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+
+        {draggingCardId && draggedUserCard && cardDragFromIdx !== null && (
+          <div
+            className={`winget-card-drag-ghost${cardDragSettling ? " is-leaving" : ""}`}
+            style={{
+              width: cardDragGhostSize.width || undefined,
+              height: cardDragGhostSize.height || undefined,
+              transform: `translate3d(${cardDragPointer.x - cardDragOffsetRef.current.x}px, ${cardDragPointer.y - cardDragOffsetRef.current.y}px, 0) scale(${cardDragSettling ? 0.96 : 1.02})`,
+              opacity: cardDragSettling ? 0 : 1,
+              filter: cardDragSettling ? "blur(2px)" : undefined,
+              transition: cardDragSettling
+                ? "opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1), transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), filter 0.28s cubic-bezier(0.22, 1, 0.36, 1)"
+                : undefined,
+            }}
+          >
+            <div className="winget-card-drag-ghost-head">
+              <span className="winget-drag-handle-mark" aria-hidden="true" />
+              <strong title={draggedUserCard.title}>{draggedUserCard.title}</strong>
+            </div>
+          </div>
+        )}
+      </section>
+
+    </div>
+  );
+});
 
 const DEFAULT_STEP_DRAFT: StepDraft = {
   name: "",
@@ -376,7 +1704,7 @@ function resolveStepDropIndex(clientY: number, layouts: StepRowLayoutSlot[]): nu
 
 const STEP_DRAG_SETTLE_MS = 300;
 
-type LibrarySourceFilter = "all" | "github" | "official";
+type LibrarySourceFilter = "all" | "github" | "official" | "store";
 
 const APP_THEME: Record<string, string> = {
   stranslate: "theme-violet",
@@ -385,16 +1713,21 @@ const APP_THEME: Record<string, string> = {
   wegame: "theme-wegame",
 };
 
-function softwareSourceKind(sw: SoftwareInfo): "github" | "official" {
-  if (sw.source_kind === "github" || sw.source_kind === "official") return sw.source_kind;
+function softwareSourceKind(sw: SoftwareInfo): "github" | "official" | "store" {
+  if (sw.source_kind === "github" || sw.source_kind === "official" || sw.source_kind === "store") return sw.source_kind;
+  if (sw.install_kind === "store") return "store";
   return sw.install_kind === "installer" ? "official" : "github";
 }
 
 function softwareSourceLabel(sw: SoftwareInfo): string {
-  return softwareSourceKind(sw) === "github" ? "GitHub" : "官网";
+  const source = softwareSourceKind(sw);
+  if (source === "github") return "GitHub";
+  if (source === "store") return "微软商店";
+  return "官网";
 }
 
 function softwareKindLabel(sw: SoftwareInfo): string {
+  if (sw.install_kind === "store") return "商店应用";
   if (sw.install_kind === "download") return "仅下载";
   return sw.install_kind === "installer" ? "安装包" : "便携版";
 }
@@ -411,12 +1744,29 @@ function isDownloadOnly(sw: SoftwareInfo) {
   return sw.install_kind === "download";
 }
 
+function canRunSilentInstall(sw: SoftwareInfo) {
+  return !!sw.silent_install_args.trim() && !!sw.portable && /\.exe$/i.test(sw.portable.name);
+}
+
+function isMicrosoftStoreApp(sw: SoftwareInfo) {
+  return sw.install_kind === "store" || softwareSourceKind(sw) === "store";
+}
+
+function microsoftStoreProductId(sw: SoftwareInfo) {
+  const match = sw.release_url.match(/apps\.microsoft\.com\/detail\/([a-z0-9]{12})/i);
+  return match?.[1]?.toUpperCase() ?? "";
+}
+
 function isUserSource(sw: SoftwareInfo) {
   return !BUILT_IN_SOFTWARE_IDS.has(sw.id);
 }
 
 function iconSrc(path: string) {
-  return path ? convertFileSrc(path) : "";
+  return path && /^(?:data:|https?:)/i.test(path) ? path : path ? convertFileSrc(path) : "";
+}
+
+function softwareIconSrc(sw: Pick<SoftwareInfo, "id" | "icon_path">) {
+  return BUILT_IN_ICON_SOURCES[sw.id] ?? iconSrc(sw.icon_path);
 }
 
 /*  helpers  */
@@ -2022,22 +3372,28 @@ function App() {
   const [scanCandidates, setScanCandidates] = useState<DownloadCandidate[]>([]);
   const [scanBusy, setScanBusy] = useState(false);
   const [scanMessage, setScanMessage] = useState("");
+  const [wingetStatus, setWingetStatus] = useState<WingetStatus | null>(null);
+  const [wingetChecking, setWingetChecking] = useState(false);
+  const missingIconRefreshStarted = useRef(false);
+  const activeInstallerLaunches = useRef(new Set<string>());
 
   const failedItems = software.filter((sw) => sw.latest_version.startsWith("查询失败"));
   const selectable = software.filter((sw) => sw.portable);
-  const visibleLibraryBaseItems = software.filter((sw) => sw.portable || sw.latest_version.startsWith("查询失败"));
+  const libraryAvailableItems = software.filter((sw) => sw.portable || isMicrosoftStoreApp(sw));
+  const visibleLibraryBaseItems = software.filter((sw) => sw.portable || isMicrosoftStoreApp(sw) || sw.latest_version.startsWith("查询失败"));
   const libraryItems = visibleLibraryBaseItems.filter((sw) => {
     if (librarySourceFilter === "all") return true;
     return softwareSourceKind(sw) === librarySourceFilter;
   });
-  const githubLibraryItems = selectable.filter((sw) => softwareSourceKind(sw) === "github");
-  const officialLibraryItems = selectable.filter((sw) => softwareSourceKind(sw) === "official");
+  const githubLibraryItems = libraryAvailableItems.filter((sw) => softwareSourceKind(sw) === "github");
+  const officialLibraryItems = libraryAvailableItems.filter((sw) => softwareSourceKind(sw) === "official");
+  const storeLibraryItems = libraryAvailableItems.filter((sw) => softwareSourceKind(sw) === "store");
   const portableItems = selectable.filter((sw) => sw.install_kind === "portable");
   const downloadOnlyItems = selectable.filter((sw) => sw.install_kind === "download");
   const installerItems = software.filter((sw) => sw.install_kind === "installer" && sw.portable);
   const cachedItems = software.filter((sw) => packageCache[sw.id]?.cached);
   const cachedBytes = cachedItems.reduce((sum, sw) => sum + (packageCache[sw.id]?.size || sw.portable?.size || 0), 0);
-  const notInstalledCount = selectable.filter((sw) => !isDownloadOnly(sw) && !installed[sw.id]).length;
+  const notInstalledCount = libraryAvailableItems.filter((sw) => !isDownloadOnly(sw) && !installed[sw.id]).length;
   const sourceHealth = failedItems.length ? `${failedItems.length} 个源异常` : loading ? "同步中" : software.length ? "正常" : "待检测";
   const isCustomPath =
     pathSettings && pathSettings.current_base.replace(/\\+$/, "") !== pathSettings.default_base.replace(/\\+$/, "");
@@ -2052,7 +3408,12 @@ function App() {
 
   function isItemBusy(id: string) {
     const st = status[id];
-    return st?.state === "downloading" || st?.state === "uninstalling" || st?.state === "installing" || st?.state === "checking";
+    return st?.state === "downloading" || st?.state === "paused" || st?.state === "cancelling" || st?.state === "uninstalling" || st?.state === "installing" || st?.state === "checking";
+  }
+
+  function isDownloadControllable(id: string) {
+    const state = status[id]?.state;
+    return state === "downloading" || state === "paused" || state === "cancelling";
   }
 
   const installableIds = [...selected].filter((id) => {
@@ -2110,13 +3471,13 @@ function App() {
   }
 
   async function detectInstalledNow(list: SoftwareInfo[] = software) {
-    const targets = list.filter((sw) => sw.portable && !isDownloadOnly(sw));
+    const targets = list.filter((sw) => (sw.portable || isMicrosoftStoreApp(sw)) && !isDownloadOnly(sw));
     if (!targets.length) return;
 
     setStatus((prev) => {
       const next = { ...prev };
       for (const sw of targets) {
-        next[sw.id] = { state: "checking", percent: 30, message: "卸载中…" };
+        next[sw.id] = { state: "checking", percent: 30, message: "正在检测…" };
       }
       return next;
     });
@@ -2180,18 +3541,63 @@ function App() {
     }
   }, []);
 
+  const refreshWingetStatus = useCallback(async () => {
+    setWingetChecking(true);
+    try {
+      setWingetStatus(await invoke<WingetStatus>("get_winget_status_cmd"));
+    } catch (e) {
+      setWingetStatus({ available: false, version: "", message: String(e) });
+    } finally {
+      setWingetChecking(false);
+    }
+  }, []);
+
+  const openWingetTerminal = useCallback(async () => {
+    try {
+      await invoke("open_winget_terminal_cmd");
+    } catch (e) {
+      setWingetStatus({ available: false, version: "", message: String(e) });
+    }
+  }, []);
+
+  const searchWingetPackages = useCallback((query: string) => (
+    invoke<WingetSearchResult[]>("search_winget_packages_cmd", { query })
+  ), []);
+
   useEffect(() => {
     const unlisten = listen<DownloadProgress>("download-progress", (event) => {
       const p = event.payload;
-      setStatus((prev) => ({
-        ...prev,
-        [p.id]: { state: "downloading", percent: p.percent, message: `${formatSize(p.downloaded)} / ${formatSize(p.total)}` },
-      }));
+      setStatus((prev) => {
+        const current = prev[p.id];
+        // 暂停和取消是用户刚刚明确做出的操作，不能被在途的最后一条进度事件覆盖。
+        if (current?.state === "paused" || current?.state === "cancelling") return prev;
+        return {
+          ...prev,
+          [p.id]: { state: "downloading", percent: p.percent, message: `${formatSize(p.downloaded)} / ${formatSize(p.total)}` },
+        };
+      });
     });
     return () => { unlisten.then((fn) => fn()); };
   }, []);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  useEffect(() => {
+    if (missingIconRefreshStarted.current) return;
+    if (!software.some((sw) => isUserSource(sw) && !sw.icon_path.trim())) return;
+
+    missingIconRefreshStarted.current = true;
+    void (async () => {
+      const updatedIds = await invoke<string[]>("fetch_missing_custom_software_icons").catch(() => []);
+      if (!updatedIds.length) return;
+      const refreshed = await invoke<SoftwareInfo[]>("fetch_all_software").catch(() => null);
+      if (refreshed) setSoftware(refreshed);
+    })();
+  }, [software]);
+
+  useEffect(() => {
+    void refreshWingetStatus();
+  }, [refreshWingetStatus]);
 
   useEffect(() => {
     if (nav !== "library") setLibraryDetailId(null);
@@ -2210,17 +3616,47 @@ function App() {
 
   const installBasePath = (pathSettings?.current_base ?? pathInput).replace(/[\\/]+$/, "");
 
-  async function openCachedPackage(sw: SoftwareInfo) {
+  async function openCachedPackage(sw: SoftwareInfo, allowExistingBusy = false) {
     const info = packageCache[sw.id];
     if (!info?.cached || !info.path) {
-      setStatus((prev) => ({ ...prev, [sw.id]: { state: "error", percent: 0, message: "卸载中…" } }));
+      setStatus((prev) => ({ ...prev, [sw.id]: { state: "error", percent: 0, message: "安装包未缓存，请先下载" } }));
       return;
     }
+    if ((!allowExistingBusy && isItemBusy(sw.id)) || activeInstallerLaunches.current.has(sw.id)) return;
+
+    activeInstallerLaunches.current.add(sw.id);
     try {
-      {
-        await invoke("open_cached_package_cmd", { path: info.path });
-        setStatus((prev) => ({ ...prev, [sw.id]: { state: "done", percent: 100, message: "卸载中…" } }));
+      setStatus((prev) => ({ ...prev, [sw.id]: { state: "installing", percent: 85, message: "正在启动安装器…" } }));
+      const launch = await invoke<PackageLaunchResult>("open_cached_package_cmd", { path: info.path });
+      if (!launch.tracked) {
+        setStatus((prev) => ({ ...prev, [sw.id]: { state: "done", percent: 100, message: launch.message } }));
+        return;
       }
+
+      setStatus((prev) => ({ ...prev, [sw.id]: { state: "installing", percent: 90, message: "安装器正在运行，请勿重复启动" } }));
+      while (await invoke<boolean>("is_cached_installer_running_cmd", { path: info.path })) {
+        await sleep(1000);
+      }
+      setStatus((prev) => ({ ...prev, [sw.id]: { state: "done", percent: 100, message: "安装器已关闭，请点击“检测安装”确认结果" } }));
+    } catch (e) {
+      setStatus((prev) => ({ ...prev, [sw.id]: { state: "error", percent: 0, message: String(e) } }));
+    } finally {
+      activeInstallerLaunches.current.delete(sw.id);
+    }
+  }
+
+  async function runSilentInstaller(sw: SoftwareInfo) {
+    const info = packageCache[sw.id];
+    if (!canRunSilentInstall(sw) || !info?.cached || !info.path || isItemBusy(sw.id)) return;
+
+    setStatus((prev) => ({ ...prev, [sw.id]: { state: "installing", percent: 60, message: "正在启动静默安装…" } }));
+    try {
+      const result = await invoke<{ message: string }>("run_silent_installer_cmd", {
+        id: sw.id,
+        path: info.path,
+        arguments: sw.silent_install_args,
+      });
+      setStatus((prev) => ({ ...prev, [sw.id]: { state: "done", percent: 100, message: result.message } }));
     } catch (e) {
       setStatus((prev) => ({ ...prev, [sw.id]: { state: "error", percent: 0, message: String(e) } }));
     }
@@ -2237,10 +3673,7 @@ function App() {
     if (!info.cached || !info.path) {
       throw new Error("安装包缓存不存在，请重新下载");
     }
-    {
-      await invoke("open_cached_package_cmd", { path: info.path });
-    }
-    await refreshPackageCache([sw], false);
+    await openCachedPackage(sw, true);
   }
 
   async function copyInstallDir(sw: SoftwareInfo) {
@@ -2248,6 +3681,21 @@ function App() {
     try {
       await navigator.clipboard.writeText(dir);
       setStatus((prev) => ({ ...prev, [sw.id]: { state: "done", percent: 100, message: `已复制路径 ${dir}` } }));
+    } catch (e) {
+      setStatus((prev) => ({ ...prev, [sw.id]: { state: "error", percent: 0, message: String(e) } }));
+    }
+  }
+
+  async function openMicrosoftStore(sw: SoftwareInfo) {
+    const productId = microsoftStoreProductId(sw);
+    if (!productId) {
+      setStatus((prev) => ({ ...prev, [sw.id]: { state: "error", percent: 0, message: "Microsoft Store 产品编号缺失" } }));
+      return;
+    }
+
+    try {
+      await invoke("open_microsoft_store_cmd", { productId });
+      setStatus((prev) => ({ ...prev, [sw.id]: { state: "done", percent: 100, message: "已打开 Microsoft Store" } }));
     } catch (e) {
       setStatus((prev) => ({ ...prev, [sw.id]: { state: "error", percent: 0, message: String(e) } }));
     }
@@ -2297,12 +3745,24 @@ function App() {
       await refreshPackageCache([sw], false);
       await detectInstalledNow([sw]);
     } catch (e) {
-      setStatus((prev) => ({ ...prev, [id]: { state: "error", percent: 0, message: String(e) } }));
+      const cancelled = isDownloadCancelledError(e);
+      setStatus((prev) => ({
+        ...prev,
+        [id]: {
+          state: cancelled ? "cancelled" : "error",
+          percent: 0,
+          message: cancelled ? "已取消下载，临时文件已清除" : String(e),
+        },
+      }));
     }
   }
 
-  async function cacheOne(sw: SoftwareInfo) {
-    if (!sw.portable) return;
+  function isDownloadCancelledError(error: unknown) {
+    return String(error).includes("下载已取消");
+  }
+
+  async function cacheOne(sw: SoftwareInfo): Promise<boolean> {
+    if (!sw.portable) return false;
     const id = sw.id;
     const cached = packageCache[id]?.cached;
     setStatus((prev) => ({ ...prev, [id]: { state: "downloading", percent: cached ? 100 : 0, message: cached ? "使用缓存" : "下载中…" } }));
@@ -2312,9 +3772,75 @@ function App() {
       });
       setStatus((prev) => ({ ...prev, [id]: { state: "done", percent: 100, message: result.message } }));
       await refreshPackageCache([sw], false);
+      return true;
     } catch (e) {
-      setStatus((prev) => ({ ...prev, [id]: { state: "error", percent: 0, message: String(e) } }));
-      throw e;
+      const cancelled = isDownloadCancelledError(e);
+      setStatus((prev) => ({
+        ...prev,
+        [id]: {
+          state: cancelled ? "cancelled" : "error",
+          percent: 0,
+          message: cancelled ? "已取消下载，临时文件已清除" : String(e),
+        },
+      }));
+      return false;
+    }
+  }
+
+  async function pauseDownload(sw: SoftwareInfo) {
+    const current = status[sw.id];
+    if (current?.state !== "downloading") return;
+
+    try {
+      await invoke("pause_download_cmd", { id: sw.id });
+      setStatus((prev) => {
+        const latest = prev[sw.id];
+        if (!latest || latest.state !== "downloading") return prev;
+        return { ...prev, [sw.id]: { ...latest, state: "paused", message: `已暂停 · ${latest.message}` } };
+      });
+    } catch (e) {
+      setStatus((prev) => ({
+        ...prev,
+        [sw.id]: { ...(prev[sw.id] ?? current), state: "downloading", message: `暂停失败：${String(e)}` },
+      }));
+    }
+  }
+
+  async function resumeDownload(sw: SoftwareInfo) {
+    const current = status[sw.id];
+    if (current?.state !== "paused") return;
+
+    try {
+      await invoke("resume_download_cmd", { id: sw.id });
+      setStatus((prev) => {
+        const latest = prev[sw.id];
+        if (!latest || latest.state !== "paused") return prev;
+        return { ...prev, [sw.id]: { ...latest, state: "downloading", message: "继续下载…" } };
+      });
+    } catch (e) {
+      setStatus((prev) => ({
+        ...prev,
+        [sw.id]: { ...(prev[sw.id] ?? current), state: "paused", message: `继续失败：${String(e)}` },
+      }));
+    }
+  }
+
+  async function cancelDownload(sw: SoftwareInfo) {
+    const current = status[sw.id];
+    if (current?.state !== "downloading" && current?.state !== "paused") return;
+
+    try {
+      await invoke("cancel_download_cmd", { id: sw.id });
+      setStatus((prev) => {
+        const latest = prev[sw.id];
+        if (!latest || (latest.state !== "downloading" && latest.state !== "paused")) return prev;
+        return { ...prev, [sw.id]: { ...latest, state: "cancelling", message: "正在取消下载…" } };
+      });
+    } catch (e) {
+      setStatus((prev) => ({
+        ...prev,
+        [sw.id]: { ...(prev[sw.id] ?? current), message: `取消失败：${String(e)}` },
+      }));
     }
   }
 
@@ -2343,7 +3869,14 @@ function App() {
   async function saveCustomSource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const displayName = customSourceForm.display_name.trim();
-    const finalDisplayName = displayName || titleFromFileName(customSourceForm.file_name) || titleFromFileName(fileNameFromUrl(customSourceForm.download_url));
+    const sourceLink = customSourceForm.source_kind === "github"
+      ? customSourceForm.repo
+      : customSourceForm.download_url;
+    const finalDisplayName = displayName
+      || (customSourceForm.source_kind === "github" ? titleFromRepo(customSourceForm.repo) : "")
+      || titleFromFileName(customSourceForm.file_name)
+      || titleFromFileName(fileNameFromUrl(sourceLink))
+      || "自定义软件";
     const form = {
       ...customSourceForm,
       id: editingCustomSourceId ?? generateCustomSourceId(finalDisplayName, software.map((sw) => sw.id)),
@@ -2351,10 +3884,13 @@ function App() {
       repo: customSourceForm.source_kind === "github" ? (parseGithubRepo(customSourceForm.repo) || customSourceForm.repo.trim()) : customSourceForm.repo.trim(),
       asset_match: customSourceForm.asset_match.trim(),
       exe_match: customSourceForm.exe_match.trim(),
-      download_url: customSourceForm.download_url.trim(),
+      download_url: customSourceForm.source_kind === "direct"
+        ? normalizeHttpLink(customSourceForm.download_url)
+        : customSourceForm.download_url.trim(),
       page_url: customSourceForm.page_url.trim(),
       version: customSourceForm.version.trim(),
       file_name: customSourceForm.file_name.trim(),
+      silent_install_args: customSourceForm.silent_install_args.trim(),
     };
 
     try {
@@ -2373,24 +3909,83 @@ function App() {
     }
   }
 
-  async function scanCustomSourceUrl() {
-    const isGithubSource = customSourceForm.source_kind === "github";
-    const url = isGithubSource
-      ? customSourceForm.repo.trim()
-      : customSourceForm.download_url.trim() || customSourceForm.page_url.trim();
-    if (!url) {
-      setScanMessage(isGithubSource ? "请先填写 GitHub 仓库或链接。" : "请先填写官网或下载地址。");
+  function updateCustomSourceLink(nextLink: string) {
+    setScanCandidates([]);
+    setScanMessage("");
+    const repo = githubRepoFromLink(nextLink);
+    setCustomSourceForm((form) => repo
+      ? {
+        ...form,
+        source_kind: "github",
+        repo,
+        download_url: "",
+        page_url: "",
+        asset_match: "",
+        version: "",
+        file_name: "",
+        silent_install_args: "",
+      }
+      : {
+        ...form,
+        source_kind: "direct",
+        repo: "",
+        download_url: nextLink,
+        page_url: "",
+        asset_match: "",
+        version: "",
+        file_name: "",
+        silent_install_args: "",
+      });
+  }
+
+  async function scanCustomSourceUrl(overrideLink?: string) {
+    const sourceLink = (overrideLink ?? (customSourceForm.source_kind === "github"
+      ? customSourceForm.repo
+      : customSourceForm.download_url)).trim();
+    if (!sourceLink) {
+      setScanMessage("请先粘贴官网、下载页或安装包链接。");
       return;
     }
+
+    const repo = githubRepoFromLink(sourceLink);
+    const scanTarget: CustomSourceScanTarget = repo
+      ? { source_kind: "github", source_url: sourceLink, repo }
+      : { source_kind: "direct", source_url: normalizeHttpLink(sourceLink), repo: "" };
+    setCustomSourceForm((form) => scanTarget.source_kind === "github"
+      ? {
+        ...form,
+        source_kind: "github",
+        repo: scanTarget.repo,
+        download_url: "",
+        page_url: "",
+        asset_match: "",
+        version: "",
+        file_name: "",
+        silent_install_args: "",
+      }
+      : {
+        ...form,
+        source_kind: "direct",
+        repo: "",
+        download_url: scanTarget.source_url,
+        page_url: "",
+        asset_match: "",
+        version: "",
+        file_name: "",
+        silent_install_args: "",
+      });
+
     try {
       setScanBusy(true);
-      setScanMessage(isGithubSource ? "正在读取 GitHub Latest Release…" : "正在扫描官网页面和脚本…");
-      const candidates = await invoke<DownloadCandidate[]>("scan_download_candidates", { url });
+      setScanMessage(scanTarget.source_kind === "github" ? "正在读取 GitHub 最新版本…" : "正在识别官网安装包…");
+      const candidates = await invoke<DownloadCandidate[]>("scan_download_candidates", {
+        url: scanTarget.source_kind === "github" ? scanTarget.repo : scanTarget.source_url,
+      });
       setScanCandidates(candidates);
       if (candidates.length === 0) {
-        setScanMessage(isGithubSource ? "Latest Release 没有可下载的安装包资产。" : "没有找到安装包候选项，可以改填 .exe / .zip / .msi 直链。");
+        setScanMessage("没有识别到 Windows 安装包。可以换官网的下载页，或直接粘贴 .exe、.msi、.zip 链接。");
       } else {
-        setScanMessage(`找到 ${candidates.length} 个候选项，请选择一个作为下载规则。`);
+        selectDownloadCandidate(candidates[0], scanTarget, true);
       }
     } catch (e) {
       setScanCandidates([]);
@@ -2400,30 +3995,40 @@ function App() {
     }
   }
 
-  function selectDownloadCandidate(candidate: DownloadCandidate) {
-    if (customSourceForm.source_kind === "github") {
-      const repo = parseGithubRepo(customSourceForm.repo);
+  function selectDownloadCandidate(
+    candidate: DownloadCandidate,
+    target?: CustomSourceScanTarget,
+    isAutoSelected = false,
+  ) {
+    const sourceKind = target?.source_kind ?? customSourceForm.source_kind;
+    if (sourceKind === "github") {
+      const repo = target?.repo || githubRepoFromLink(customSourceForm.repo) || customSourceForm.repo;
       setCustomSourceForm((form) => ({
         ...form,
         repo: repo || form.repo,
-        display_name: form.display_name.trim() || titleFromRepo(repo || form.repo),
+        source_kind: "github",
+        display_name: form.display_name.trim() || candidate.display_name || titleFromRepo(repo || form.repo),
         asset_match: candidate.matcher,
+        version: "",
+        file_name: "",
       }));
-      setScanMessage(`已选择 ${candidate.file_name}；以后会通过 GitHub Release API 自动追 latest。`);
+      setScanMessage(`${isAutoSelected ? "已识别" : "已选择"} ${candidate.display_name || titleFromRepo(repo)} · ${candidate.version} · ${candidate.size ? formatSize(candidate.size) : "大小未知"}`);
       return;
     }
-    const sourceUrl = customSourceForm.download_url.trim() || candidate.source_page;
-    const inferredName = titleFromFileName(candidate.file_name);
+    const sourceUrl = target?.source_url || customSourceForm.download_url.trim() || candidate.source_page;
+    const inferredName = candidate.display_name || titleFromFileName(candidate.file_name);
     setCustomSourceForm((form) => ({
       ...form,
+      source_kind: "direct",
+      repo: "",
       display_name: form.display_name.trim() || inferredName,
       download_url: sourceUrl,
-      page_url: form.page_url.trim() || candidate.source_page,
+      page_url: sourceUrl,
       asset_match: candidate.matcher,
       version: "",
       file_name: "",
     }));
-    setScanMessage(`已选择 ${candidate.file_name}；以后会按匹配规则自动追同类最新版。`);
+    setScanMessage(`${isAutoSelected ? "已识别" : "已选择"} ${inferredName || candidate.file_name} · ${candidate.version} · ${candidate.size ? formatSize(candidate.size) : "大小未知"}`);
   }
 
   async function removeCustomSource(sw: SoftwareInfo) {
@@ -2509,12 +4114,20 @@ function App() {
   function rowStatus(sw: SoftwareInfo): { label: string; kind: string } {
     const st = status[sw.id];
     if (st?.state === "downloading") return { label: st.message, kind: "busy" };
+    if (st?.state === "paused") return { label: st.message, kind: "busy" };
+    if (st?.state === "cancelling") return { label: "正在取消", kind: "busy" };
+    if (st?.state === "cancelled") return { label: "已取消", kind: "idle" };
     if (st?.state === "installing") return { label: st.message, kind: "busy" };
     if (st?.state === "uninstalling") return { label: st.message, kind: "busy" };
     if (st?.state === "checking") return { label: st.message, kind: "busy" };
     if (st?.state === "uninstall_failed") return { label: "卸载失败", kind: "uninstall-failed" };
     if (st?.state === "error") return { label: st.message || "安装失败", kind: "error" };
     if (st?.state === "done") return { label: st.message, kind: "ok" };
+    if (isMicrosoftStoreApp(sw)) {
+      return installed[sw.id]
+        ? { label: "已安装", kind: "installed" }
+        : { label: "商店可安装", kind: "idle" };
+    }
     if (sw.install_kind === "download") {
       if (!sw.portable) return { label: sw.latest_version.startsWith("查询失败") ? "检测失败" : "无下载项", kind: "warn" };
       if (packageCache[sw.id]?.cached) return { label: "已缓存", kind: "cached" };
@@ -2546,19 +4159,46 @@ function App() {
   const NAV: { id: NavId; label: string; icon: NavId; badge?: string }[] = [
     { id: "library", label: "软件库", icon: "library" },
     { id: "packages", label: "安装包", icon: "packages" },
+    { id: "winget", label: "Winget", icon: "winget" },
     { id: "automation", label: "自动化", icon: "automation" },
     { id: "settings", label: "设置", icon: "settings" },
   ];
 
   /*  page renderers  */
 
+  function renderDownloadControls(sw: SoftwareInfo) {
+    const state = status[sw.id]?.state;
+    if (state !== "downloading" && state !== "paused" && state !== "cancelling") return null;
+
+    if (state === "cancelling") {
+      return (
+        <button className="btn btn-sm" type="button" disabled>
+          取消中
+        </button>
+      );
+    }
+
+    return (
+      <>
+        <button className="btn btn-sm btn-primary" type="button" onClick={() => void (state === "paused" ? resumeDownload(sw) : pauseDownload(sw))}>
+          {state === "paused" ? "继续" : "暂停"}
+        </button>
+        <button className="btn btn-sm btn-danger" type="button" onClick={() => void cancelDownload(sw)}>
+          取消
+        </button>
+      </>
+    );
+  }
+
   function renderLibraryPrimaryActions(sw: SoftwareInfo, mode: "list" | "detail") {
     const isOfficial = softwareSourceKind(sw) === "official";
+    const isStore = isMicrosoftStoreApp(sw);
     const isBusy = isItemBusy(sw.id);
     const isInstalled = installed[sw.id];
     const canInstallGithub = sw.install_kind === "portable" && !!sw.portable;
     const downloadOnly = isDownloadOnly(sw);
     const cached = packageCache[sw.id]?.cached;
+    const canSilentInstall = canRunSilentInstall(sw);
     
 
     const detailBtn = (
@@ -2572,16 +4212,31 @@ function App() {
       </button>
     );
 
+    if (isDownloadControllable(sw.id)) {
+      return mode === "list" ? <>{renderDownloadControls(sw)}</> : null;
+    }
+
     let installBtn;
-    if (downloadOnly) {
+    if (isStore) {
+      installBtn = (
+        <button
+          className="btn btn-sm btn-primary library-action-install"
+          type="button"
+          disabled={isBusy}
+          onClick={() => void openMicrosoftStore(sw)}
+        >
+          打开商店
+        </button>
+      );
+    } else if (downloadOnly) {
       installBtn = (
         <button
           className="btn btn-sm btn-primary library-action-install"
           type="button"
           disabled={isBusy || !sw.portable}
-          onClick={() => void (cached ? openCachedPackage(sw) : cacheOne(sw))}
+          onClick={() => void (cached ? (canSilentInstall ? runSilentInstaller(sw) : openCachedPackage(sw)) : cacheOne(sw))}
         >
-          {cached ? "打开" : "下载"}
+          {cached ? (canSilentInstall ? "安装" : "打开") : "下载"}
         </button>
       );
     } else if (isInstalled) {
@@ -2635,12 +4290,13 @@ function App() {
 
   function renderLibraryItemColumns(sw: SoftwareInfo) {
     const { label, kind } = rowStatus(sw);
+    const icon = softwareIconSrc(sw);
 
     return (
       <>
         <div className="col-name">
-          <span className={`row-avatar ${sw.icon_path ? "custom-icon-mark" : "brand-mark"}`} aria-hidden="true">
-            {sw.icon_path ? <img src={iconSrc(sw.icon_path)} alt="" /> : <span className="brand-mark-core" />}
+          <span className={`row-avatar ${icon ? "custom-icon-mark" : "brand-mark"}`} aria-hidden="true">
+            {icon ? <img src={icon} alt="" /> : <span className="brand-mark-core" />}
           </span>
           <div className="row-text">
             <span className="row-title" title={sw.display_name}>{sw.display_name}</span>
@@ -2663,6 +4319,8 @@ function App() {
   function renderLibrarySoftwareDetail(sw: SoftwareInfo) {
     const theme = APP_THEME[sw.id] || "theme-mint";
     const isOfficial = softwareSourceKind(sw) === "official";
+    const isStore = isMicrosoftStoreApp(sw);
+    const storeProductId = microsoftStoreProductId(sw);
     const downloadOnly = isDownloadOnly(sw);
     const userSource = isUserSource(sw);
     const cached = packageCache[sw.id]?.cached;
@@ -2705,44 +4363,89 @@ function App() {
 
         <section className="library-detail-panel">
           <h3>详细信息</h3>
-          <div className="library-detail-grid">
-            <div>
-              <span>安装包</span>
-              <code>{sw.portable?.name || "—"}</code>
-            </div>
-            <div>
-              <span>来源</span>
-              <code>{softwareSourceLabel(sw)} · {softwareKindLabel(sw)}</code>
-            </div>
-            <div>
-              <span>{isOfficial ? "官网" : "发布页"}</span>
-              <code>{sw.release_url || "—"}</code>
-            </div>
-            <div>
-              <span>{downloadOnly ? "下载缓存" : "安装目录"}</span>
-              <code>{paths?.install_dir || installDir}</code>
-            </div>
-            <div>
-              <span>缓存路径</span>
-              <code>{cacheInfo?.path || (cached ? "已缓存" : "未缓存")}</code>
-            </div>
-            {isOfficial && !downloadOnly && (
+          {isStore ? (
+            <div className="library-detail-grid">
               <div>
-                <span>安装流程</span>
-                <code>官网源 · 缓存 → 检测安装 → 自动化/打开安装器</code>
+                <span>安装方式</span>
+                <code>Microsoft Store</code>
               </div>
-            )}
-            {downloadOnly && (
               <div>
-                <span>处理方式</span>
-                <code>只下载到 data\packages，不执行安装</code>
+                <span>应用包</span>
+                <code>OpenAI.Codex</code>
               </div>
-            )}
-          </div>
+              <div>
+                <span>商店编号</span>
+                <code>{storeProductId || "—"}</code>
+              </div>
+              <div>
+                <span>更新方式</span>
+                <code>由 Microsoft Store 管理更新</code>
+              </div>
+              <div>
+                <span>商店网页</span>
+                <code>{sw.release_url || "—"}</code>
+              </div>
+            </div>
+          ) : (
+            <div className="library-detail-grid">
+              <div>
+                <span>安装包</span>
+                <code>{sw.portable?.name || "—"}</code>
+              </div>
+              <div>
+                <span>来源</span>
+                <code>{softwareSourceLabel(sw)} · {softwareKindLabel(sw)}</code>
+              </div>
+              <div>
+                <span>{isOfficial ? "官网" : "发布页"}</span>
+                <code>{sw.release_url || "—"}</code>
+              </div>
+              <div>
+                <span>{downloadOnly ? "下载缓存" : "安装目录"}</span>
+                <code>{paths?.install_dir || installDir}</code>
+              </div>
+              <div>
+                <span>缓存路径</span>
+                <code>{cacheInfo?.path || (cached ? "已缓存" : "未缓存")}</code>
+              </div>
+              {isOfficial && !downloadOnly && (
+                <div>
+                  <span>安装流程</span>
+                  <code>官网源 · 缓存 → 检测安装 → 自动化/打开安装器</code>
+                </div>
+              )}
+              {downloadOnly && (
+                <div>
+                  <span>处理方式</span>
+                  <code>{canRunSilentInstall(sw) ? "下载到本地后，按保存的参数静默安装" : "只下载到 data\\packages，不执行安装"}</code>
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
-        {downloadOnly ? (
+        {isStore ? (
           <div className="library-detail-actions">
+            <button className="btn btn-sm btn-primary" type="button" disabled={isBusy} onClick={() => void openMicrosoftStore(sw)}>
+              打开 Microsoft Store
+            </button>
+            <button className="btn btn-sm" type="button" disabled={isBusy} onClick={() => void detectInstalledNow([sw])}>
+              检测安装
+            </button>
+            {sw.release_url && (
+              <button className="btn btn-sm btn-ghost" type="button" onClick={() => void openUrl(sw.release_url)}>
+                打开商店网页
+              </button>
+            )}
+          </div>
+        ) : downloadOnly ? (
+          <div className="library-detail-actions">
+            {renderDownloadControls(sw)}
+            {canRunSilentInstall(sw) && (
+              <button className="btn btn-sm btn-primary" type="button" disabled={!cached || isBusy} onClick={() => void runSilentInstaller(sw)}>
+                静默安装
+              </button>
+            )}
             <button className="btn btn-sm btn-primary" type="button" disabled={isBusy || !sw.portable} onClick={() => void cacheOne(sw)}>
               {cached ? "刷新缓存" : "下载"}
             </button>
@@ -2782,6 +4485,7 @@ function App() {
           </div>
         ) : isOfficial ? (
           <div className="library-detail-actions">
+            {renderDownloadControls(sw)}
             <button className="btn btn-sm" type="button" disabled={isBusy} onClick={() => void detectInstalledNow([sw])}>
               检测安装
             </button>
@@ -2804,11 +4508,14 @@ function App() {
             )}
           </div>
         ) : (
-          sw.release_url && (
+          (isDownloadControllable(sw.id) || sw.release_url) && (
             <div className="library-detail-actions">
-              <button className="btn btn-sm btn-ghost" type="button" onClick={() => void openUrl(sw.release_url)}>
-                打开 GitHub Release
-              </button>
+              {renderDownloadControls(sw)}
+              {sw.release_url && (
+                <button className="btn btn-sm btn-ghost" type="button" onClick={() => void openUrl(sw.release_url)}>
+                  打开 GitHub Release
+                </button>
+              )}
             </div>
           )
         )}
@@ -2829,10 +4536,10 @@ function App() {
       <div className="page page-stack">
         <header className="page-head">
           <div>
-            <p className="page-kicker">便携版 · 官网安装包 · 自定义下载源</p>
+            <p className="page-kicker">便携版 · 官网安装包 · Microsoft Store · 自定义下载源</p>
             <h2>软件库</h2>
             <p className="page-sub">
-              {selectable.length} 个可用（GitHub {githubLibraryItems.length} · 官网 {officialLibraryItems.length} · 下载源 {downloadOnlyItems.length}）· {notInstalledCount} 个未安装 · {loading ? "同步中" : software.length ? "检测完成" : "未检测"}
+              {libraryAvailableItems.length} 个可用（GitHub {githubLibraryItems.length} · 官网 {officialLibraryItems.length} · 商店 {storeLibraryItems.length} · 下载源 {downloadOnlyItems.length}）· {notInstalledCount} 个未安装 · {loading ? "同步中" : software.length ? "检测完成" : "未检测"}
             </p>
           </div>
           <button className="btn btn-ghost btn-refresh" type="button" onClick={loadAll} disabled={loading || batchBusy} title="刷新">
@@ -2881,9 +4588,16 @@ function App() {
           >
             官网 {officialLibraryItems.length}
           </button>
+          <button
+            type="button"
+            className={`library-filter-chip library-filter-store${librarySourceFilter === "store" ? " is-active" : ""}`}
+            onClick={() => setLibrarySourceFilter("store")}
+          >
+            商店 {storeLibraryItems.length}
+          </button>
         </div>
 
-        <p className="library-open-hint">官网和下载源单击行进入详情；GitHub 便携版双击行进入详情，单击勾选后点「安装」。</p>
+        <p className="library-open-hint">官网、商店和下载源单击行进入详情；GitHub 便携版双击行进入详情，单击勾选后点「安装」。</p>
 
         <div className="action-bar">
           <span className={`sel-count${selected.size ? " sel-count-on" : ""}`}>
@@ -2893,8 +4607,8 @@ function App() {
           <button className="btn btn-link" type="button" onClick={() => setSelected(new Set())} disabled={batchBusy || !selected.size}>清空</button>
           {error && <span className="action-error">{error}</span>}
           <div className="action-spacer" />
-          <button className="btn" type="button" onClick={openNewCustomSourceModal} disabled={loading || batchBusy}>添加下载源</button>
-          <button className="btn" type="button" onClick={() => void detectInstalledNow()} disabled={loading || batchBusy || !selectable.length}>一键检测</button>
+          <button className="btn" type="button" onClick={openNewCustomSourceModal} disabled={loading || batchBusy}>添加软件链接</button>
+          <button className="btn" type="button" onClick={() => void detectInstalledNow()} disabled={loading || batchBusy || !libraryAvailableItems.length}>一键检测</button>
           <button className="btn btn-primary" type="button" onClick={batchInstall} disabled={batchBusy || !installableIds.length}>
             {primaryActionLabel}{installableIds.length ? ` (${installableIds.length})` : ""}
           </button>
@@ -2925,14 +4639,15 @@ function App() {
             const st = status[sw.id];
             const isBusy = isItemBusy(sw.id);
             const isOfficial = softwareSourceKind(sw) === "official";
+            const isStore = isMicrosoftStoreApp(sw);
 
             return (
               <div
                 key={sw.id}
-                className={`list-row list-row-library ${theme}${checked ? " row-selected" : ""}${installed[sw.id] ? " row-installed" : ""}${isBusy ? " row-busy" : ""}${isOfficial ? " row-official row-openable" : " row-github row-openable"}`}
+                className={`list-row list-row-library ${theme}${checked ? " row-selected" : ""}${installed[sw.id] ? " row-installed" : ""}${isBusy ? " row-busy" : ""}${isStore ? " row-store row-openable" : isOfficial ? " row-official row-openable" : " row-github row-openable"}`}
                 style={st?.state === "downloading" ? { ["--dl-progress" as string]: `${st.percent}%` } : undefined}
                 onClick={() => {
-                  if (isOfficial || isDownloadOnly(sw)) openLibraryDetail(sw.id);
+                  if (isOfficial || isStore || isDownloadOnly(sw)) openLibraryDetail(sw.id);
                   else toggleRow(sw.id, canSelect);
                 }}
                 onDoubleClick={() => openLibraryDetail(sw.id)}
@@ -2964,6 +4679,8 @@ function App() {
               <strong>
                 {librarySourceFilter === "official"
                   ? "暂无官网安装包"
+                  : librarySourceFilter === "store"
+                    ? "暂无 Microsoft Store 应用"
                   : librarySourceFilter === "github"
                     ? "暂无 GitHub 便携版"
                     : failedItems.length
@@ -3078,14 +4795,12 @@ function App() {
     try {
       if (!packageCache[id]?.cached) {
         setStatus((prev) => ({ ...prev, [id]: { state: "downloading", percent: 0, message: "下载安装包" } }));
-        await cacheOne(sw);
+        if (!(await cacheOne(sw))) return;
         await refreshPackageCache([sw], false);
       }
 
       if (!sw.ocr_install) {
-        setStatus((prev) => ({ ...prev, [id]: { state: "installing", percent: 85, message: "正在打开官方安装器" } }));
         await openFreshCachedPackage(sw);
-        setStatus((prev) => ({ ...prev, [id]: { state: "done", percent: 100, message: "已打开官方安装器，请按向导完成安装" } }));
         return;
       }
 
@@ -3141,7 +4856,7 @@ function App() {
               ? "uninstall-failed"
               : st?.state === "error"
                 ? "error"
-                : st?.state === "uninstalling"
+                : st?.state === "uninstalling" || st?.state === "paused" || st?.state === "cancelling"
                   ? "busy"
                   : isInstalled
                     ? "installed"
@@ -3151,7 +4866,13 @@ function App() {
               ? "卸载失败"
               : st?.state === "error"
                 ? st.message || "安装失败"
-                : st?.state === "uninstalling"
+                : st?.state === "paused"
+                  ? "已暂停"
+                  : st?.state === "cancelling"
+                    ? "正在取消…"
+                    : st?.state === "cancelled"
+                      ? "已取消"
+                      : st?.state === "uninstalling"
                   ? "卸载中…"
                   : isInstalled
                     ? "已安装"
@@ -3159,12 +4880,13 @@ function App() {
                       ? "已缓存"
                       : "未下载";
           const installDir = `${installBasePath}\\${sw.id}`;
+          const icon = softwareIconSrc(sw);
           return (
             <div key={sw.id} className="pkg-card">
               <div className="pkg-card-top">
                 <div className="pkg-title">
-                  <span className={`pkg-avatar ${sw.icon_path ? "custom-icon-mark" : "brand-mark"}`} aria-hidden="true">
-                    {sw.icon_path ? <img src={iconSrc(sw.icon_path)} alt="" /> : <span className="brand-mark-core" />}
+                  <span className={`pkg-avatar ${icon ? "custom-icon-mark" : "brand-mark"}`} aria-hidden="true">
+                    {icon ? <img src={icon} alt="" /> : <span className="brand-mark-core" />}
                   </span>
                   <div>
                     <strong>{sw.display_name}</strong>
@@ -3201,6 +4923,7 @@ function App() {
               )}
 
               <div className="pkg-card-actions">
+                {renderDownloadControls(sw)}
                 <button className="btn btn-sm" type="button" disabled={isBusy} onClick={() => void detectInstalledNow([sw])}>
                   检测安装
                 </button>
@@ -3303,6 +5026,13 @@ function App() {
     if (!showCustomSource) return null;
 
     const isGithub = customSourceForm.source_kind === "github";
+    const sourceLink = isGithub ? customSourceForm.repo : customSourceForm.download_url;
+    const selectedCandidate = scanCandidates.find((candidate) => candidate.matcher === customSourceForm.asset_match)
+      ?? scanCandidates[0];
+    const recognizedName = selectedCandidate
+      ? customSourceForm.display_name || selectedCandidate.display_name || titleFromFileName(selectedCandidate.file_name)
+      : "";
+    const canSave = Boolean(editingCustomSourceId || scanCandidates.length > 0);
     const closeCustomSourceModal = () => {
       setShowCustomSource(false);
       setEditingCustomSourceId(null);
@@ -3312,209 +5042,140 @@ function App() {
     return (
       <div className="custom-software-overlay" onMouseDown={closeCustomSourceModal}>
         <form className="custom-software-modal" onSubmit={saveCustomSource} onMouseDown={(e) => e.stopPropagation()}>
-          <h3>{editingCustomSourceId ? "编辑下载源" : "添加下载源"}</h3>
+          <h3>{editingCustomSourceId ? "编辑软件链接" : "添加软件链接"}</h3>
+          <p className="custom-source-intro">粘贴官网、下载页或安装包链接。系统会识别软件、版本和 Windows 安装包。</p>
           <div className="form-group">
-            <label>来源类型</label>
-            <select
-              className="path-input"
-              value={customSourceForm.source_kind}
-              onChange={(e) => {
-                setScanCandidates([]);
-                setScanMessage("");
-                setCustomSourceForm((form) => ({ ...form, source_kind: e.target.value as CustomSourceForm["source_kind"] }));
-              }}
-            >
-              <option value="github">GitHub Release</option>
-              <option value="direct">官网自动解析 / 直接下载</option>
-            </select>
-          </div>
-          <div className="form-group">
-            <label>显示名称</label>
-            <input
-              required
-              value={customSourceForm.display_name}
-              onChange={(e) => setCustomSourceForm((form) => ({ ...form, display_name: e.target.value }))}
-              placeholder="例如 My Tool"
-              spellCheck={false}
-            />
+            <label>软件链接</label>
+            <div className="source-scan-row">
+              <input
+                required
+                value={sourceLink}
+                onChange={(event) => updateCustomSourceLink(event.target.value)}
+                onPaste={(event) => {
+                  const pasted = event.clipboardData.getData("text").trim();
+                  if (pasted) window.setTimeout(() => void scanCustomSourceUrl(pasted), 0);
+                }}
+                placeholder="粘贴官网、下载页、GitHub 或安装包链接"
+                spellCheck={false}
+              />
+              <button className="btn btn-sm" type="button" onClick={() => void scanCustomSourceUrl()} disabled={scanBusy || !sourceLink.trim()}>
+                {scanBusy ? "识别中" : "识别链接"}
+              </button>
+            </div>
           </div>
 
-          {isGithub ? (
-            <>
-              <div className="form-group">
-                <label>GitHub 仓库或链接</label>
-                <div className="source-scan-row">
-                  <input
-                    required
-                    value={customSourceForm.repo}
-                    onChange={(e) => {
-                      setScanCandidates([]);
-                      setScanMessage("");
-                      const nextRepo = e.target.value;
-                      const parsedRepo = parseGithubRepo(nextRepo);
-                      setCustomSourceForm((form) => ({
-                        ...form,
-                        repo: parsedRepo || nextRepo,
-                        display_name: form.display_name.trim() ? form.display_name : titleFromRepo(parsedRepo || nextRepo),
-                      }));
-                    }}
-                    placeholder="owner/repo 或 https://github.com/owner/repo"
-                    spellCheck={false}
-                  />
-                  <button className="btn btn-sm" type="button" onClick={scanCustomSourceUrl} disabled={scanBusy || !customSourceForm.repo.trim()}>
-                    {scanBusy ? "扫描中" : "扫描 Release"}
-                  </button>
-                </div>
-              </div>
-              {(scanMessage || scanCandidates.length > 0) && (
-                <div className="scan-panel">
-                  {scanMessage && <p className="scan-message">{scanMessage}</p>}
-                  {scanCandidates.length > 0 && (
-                    <div className="scan-candidates">
-                      {scanCandidates.map((candidate) => {
-                        const selected = customSourceForm.asset_match === candidate.matcher;
-                        return (
-                          <button
-                            key={candidate.url}
-                            className={`scan-candidate${selected ? " is-selected" : ""}`}
-                            type="button"
-                            onClick={() => selectDownloadCandidate(candidate)}
-                            title={candidate.url}
-                          >
-                            <span className="scan-candidate-main">
-                              <strong>{candidate.file_name}</strong>
-                              <span>{candidate.version} · {candidate.size ? formatSize(candidate.size) : "大小未知"}</span>
-                            </span>
-                            <span className="scan-candidate-rule">{candidate.matcher || "未生成规则"}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
+          {(scanMessage || selectedCandidate) && (
+            <section className="link-recognition" aria-live="polite">
+              {scanMessage && <p className="scan-message">{scanMessage}</p>}
+              {selectedCandidate && (
+                <div className="recognized-package">
+                  <span>已识别</span>
+                  <strong>{recognizedName || selectedCandidate.file_name}</strong>
+                  <p>{selectedCandidate.version} · {selectedCandidate.size ? formatSize(selectedCandidate.size) : "大小未知"}</p>
+                  <small>{selectedCandidate.file_name}</small>
                 </div>
               )}
-              <div className="form-group">
-                <label>Release 资产匹配规则</label>
-                <input
-                  required
-                  value={customSourceForm.asset_match}
-                  onChange={(e) => setCustomSourceForm((form) => ({ ...form, asset_match: e.target.value }))}
-                  placeholder="扫描后自动生成，例如 x64 exe"
-                  spellCheck={false}
-                />
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="form-group">
-                <label>官网或下载地址</label>
-                <div className="source-scan-row">
-                  <input
-                    required
-                    value={customSourceForm.download_url}
-                    onChange={(e) => {
-                      setScanCandidates([]);
-                      setScanMessage("");
-                      const nextUrl = e.target.value;
-                      const githubRepo = parseGithubRepo(nextUrl);
-                      if (/github\.com\//i.test(nextUrl) && githubRepo) {
-                        setCustomSourceForm((form) => ({
-                          ...form,
-                          source_kind: "github",
-                          repo: githubRepo,
-                          download_url: "",
-                          display_name: form.display_name.trim() ? form.display_name : titleFromRepo(githubRepo),
-                        }));
-                        setScanMessage("已识别为 GitHub 仓库，建议扫描 Release 选择下载资产。");
-                        return;
-                      }
-                      const inferredName = titleFromFileName(fileNameFromUrl(nextUrl));
-                      setCustomSourceForm((form) => ({
-                        ...form,
-                        download_url: nextUrl,
-                        display_name: form.display_name.trim() ? form.display_name : inferredName,
-                      }));
-                    }}
-                    placeholder="例如 https://im.qq.com/ 或 https://example.com/setup.exe"
-                    spellCheck={false}
-                  />
-                  <button className="btn btn-sm" type="button" onClick={scanCustomSourceUrl} disabled={scanBusy || !customSourceForm.download_url.trim()}>
-                    {scanBusy ? "扫描中" : "扫描官网"}
-                  </button>
-                </div>
-              </div>
-              {(scanMessage || scanCandidates.length > 0) && (
-                <div className="scan-panel">
-                  {scanMessage && <p className="scan-message">{scanMessage}</p>}
-                  {scanCandidates.length > 0 && (
-                    <div className="scan-candidates">
-                      {scanCandidates.map((candidate) => {
-                        const selected = customSourceForm.asset_match === candidate.matcher;
-                        return (
-                          <button
-                            key={candidate.url}
-                            className={`scan-candidate${selected ? " is-selected" : ""}`}
-                            type="button"
-                            onClick={() => selectDownloadCandidate(candidate)}
-                            title={candidate.url}
-                          >
-                            <span className="scan-candidate-main">
-                              <strong>{candidate.file_name}</strong>
-                              <span>{candidate.version} · {candidate.size ? formatSize(candidate.size) : "大小未知"}</span>
-                            </span>
-                            <span className="scan-candidate-rule">{candidate.matcher || "未生成规则"}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
+              {scanCandidates.length > 1 && (
+                <div className="scan-candidates">
+                  {scanCandidates.slice(0, 5).map((candidate) => (
+                    <button
+                      key={candidate.url}
+                      className={`scan-candidate${candidate.url === selectedCandidate?.url ? " is-selected" : ""}`}
+                      type="button"
+                      onClick={() => selectDownloadCandidate(candidate)}
+                      title={candidate.file_name}
+                    >
+                      <span className="scan-candidate-main">
+                        <strong>{candidate.display_name || titleFromFileName(candidate.file_name) || candidate.file_name}</strong>
+                        <span>{candidate.version} · {candidate.size ? formatSize(candidate.size) : "大小未知"}</span>
+                      </span>
+                      <span className="scan-candidate-rule">选用</span>
+                    </button>
+                  ))}
                 </div>
               )}
-              <div className="form-group">
-                <label>自动匹配规则（扫描后自动生成）</label>
-                <input
-                  value={customSourceForm.asset_match}
-                  onChange={(e) => setCustomSourceForm((form) => ({ ...form, asset_match: e.target.value }))}
-                  placeholder="通常不用填；扫描官网并选择候选项后自动生成"
-                  spellCheck={false}
-                />
-              </div>
-              <div className="form-group">
-                <label>来源页面（可选）</label>
-                <input
-                  value={customSourceForm.page_url}
-                  onChange={(e) => setCustomSourceForm((form) => ({ ...form, page_url: e.target.value }))}
-                  placeholder="直链下载时可填官网页面，用来打开来源"
-                  spellCheck={false}
-                />
-              </div>
-              <div className="form-group form-grid-2">
-                <label>
-                  显示版本（高级，可不填）
-                  <input
-                    value={customSourceForm.version}
-                    onChange={(e) => setCustomSourceForm((form) => ({ ...form, version: e.target.value }))}
-                    placeholder="v1.0.0"
-                    spellCheck={false}
-                  />
-                </label>
-                <label>
-                  保存文件名（高级，可不填）
-                  <input
-                    value={customSourceForm.file_name}
-                    onChange={(e) => setCustomSourceForm((form) => ({ ...form, file_name: e.target.value }))}
-                    placeholder="setup.exe"
-                    spellCheck={false}
-                  />
-                </label>
-              </div>
-            </>
+            </section>
           )}
 
-          <p className="modal-hint">只填官网或下载地址即可。官网建议先扫描并选择候选项；直链会固定下载当前地址。没有数字版本时会显示为稳定版、自动解析或固定链接。</p>
+          <details className="custom-source-advanced">
+            <summary>高级设置</summary>
+            <div className="form-group">
+              <label>显示名称（可选）</label>
+              <input
+                value={customSourceForm.display_name}
+                onChange={(event) => setCustomSourceForm((form) => ({ ...form, display_name: event.target.value }))}
+                placeholder="默认使用识别到的软件名"
+                spellCheck={false}
+              />
+            </div>
+            {isGithub ? (
+              <div className="form-group">
+                <label>Release 文件匹配规则</label>
+                <input
+                  value={customSourceForm.asset_match}
+                  onChange={(event) => setCustomSourceForm((form) => ({ ...form, asset_match: event.target.value }))}
+                  placeholder="识别后自动生成"
+                  spellCheck={false}
+                />
+              </div>
+            ) : (
+              <>
+                <div className="form-group">
+                  <label>自动匹配规则</label>
+                  <input
+                    value={customSourceForm.asset_match}
+                    onChange={(event) => setCustomSourceForm((form) => ({ ...form, asset_match: event.target.value }))}
+                    placeholder="通常无需修改"
+                    spellCheck={false}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>来源页面</label>
+                  <input
+                    value={customSourceForm.page_url}
+                    onChange={(event) => setCustomSourceForm((form) => ({ ...form, page_url: event.target.value }))}
+                    placeholder="默认使用上面的链接"
+                    spellCheck={false}
+                  />
+                </div>
+                <div className="form-group form-grid-2">
+                  <label>
+                    固定显示版本
+                    <input
+                      value={customSourceForm.version}
+                      onChange={(event) => setCustomSourceForm((form) => ({ ...form, version: event.target.value }))}
+                      placeholder="留空自动识别"
+                      spellCheck={false}
+                    />
+                  </label>
+                  <label>
+                    固定保存文件名
+                    <input
+                      value={customSourceForm.file_name}
+                      onChange={(event) => setCustomSourceForm((form) => ({ ...form, file_name: event.target.value }))}
+                      placeholder="留空自动识别"
+                      spellCheck={false}
+                    />
+                  </label>
+                </div>
+              </>
+            )}
+            <div className="form-group">
+              <label>静默安装参数（可选）</label>
+              <input
+                value={customSourceForm.silent_install_args}
+                onChange={(event) => setCustomSourceForm((form) => ({ ...form, silent_install_args: event.target.value }))}
+                placeholder="例如：/VERYSILENT /SUPPRESSMSGBOXES"
+                spellCheck={false}
+              />
+              <small>保存后，缓存安装包会显示“安装”；参数会直接传给安装器。</small>
+            </div>
+          </details>
+
+          <p className="modal-hint">官网链接会在刷新时再次识别；对于 VS Code 这类官方稳定入口，会自动跟随新版安装包。</p>
           <div className="modal-actions">
             <button className="btn" type="button" onClick={closeCustomSourceModal}>取消</button>
-            <button className="btn btn-primary" type="submit" disabled={loading}>保存</button>
+            <button className="btn btn-primary" type="submit" disabled={loading || !canSave}>加入软件库</button>
           </div>
         </form>
       </div>
@@ -3543,7 +5204,11 @@ function App() {
               className={`sidebar-nav-item${nav === item.id ? " active" : ""}`}
               onClick={() => setNav(item.id)}
             >
-              <span className={`sidebar-nav-icon sidebar-nav-icon-${item.icon}`} aria-hidden="true" />
+              {item.id === "winget" ? (
+                <img className="sidebar-nav-icon sidebar-nav-icon-image" src={wingetIcon} alt="" />
+              ) : (
+                <span className={`sidebar-nav-icon sidebar-nav-icon-${item.icon}`} aria-hidden="true" />
+              )}
               {item.label}
               {item.badge && <span className="sidebar-nav-badge">{item.badge}</span>}
             </button>
@@ -3554,6 +5219,15 @@ function App() {
         <section className="main-panel">
           {nav === "library" && renderLibraryPage()}
           {nav === "packages" && renderPackagesPage()}
+          {nav === "winget" && (
+            <WingetPage
+              status={wingetStatus}
+              checking={wingetChecking}
+              onRefresh={refreshWingetStatus}
+              onOpenTerminal={openWingetTerminal}
+              onSearch={searchWingetPackages}
+            />
+          )}
           {nav === "automation" && <AutomationPage software={software} />}
           {nav === "settings" && renderSettingsPage()}
         </section>

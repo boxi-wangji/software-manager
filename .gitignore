@@ -10,6 +10,15 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+构建/
+历史排错/
+WinUI对比/
+Wpf对比/
+*.log
+scripts/rcedit-x64.exe
+scripts/Build-WpfCompare.ps1
+scripts/icon-options.html
+项目说明.md
 *.local
 
 # Editor directories and files

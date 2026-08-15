@@ -6,9 +6,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path $PSScriptRoot -Parent
-$ReleaseDir = Join-Path $Root "release\software-manager"
-$DesktopDir = Join-Path ([Environment]::GetFolderPath("Desktop")) "software-manager"
-$Rcedit = Join-Path $PSScriptRoot "rcedit-x64.exe"
+$BuildDir = Join-Path (Split-Path $Root -Parent) "构建"
+$env:CARGO_TARGET_DIR = Join-Path $BuildDir 'Rust'
+$ReleaseDir = Join-Path $BuildDir "桌面程序\软件管家（便携版）"
+$DesktopDir = Join-Path ([Environment]::GetFolderPath("Desktop")) "软件管家（便携版）"
+$Rcedit = Join-Path $Root "node_modules\rcedit\bin\rcedit-x64.exe"
 $IconIco = Join-Path $Root "src-tauri\icons\icon.ico"
 
 function Set-ExeIcon {
@@ -16,7 +18,7 @@ function Set-ExeIcon {
         [string]$ExePath,
         [string]$IconPath
     )
-    if (-not (Test-Path $Rcedit)) { throw "missing $Rcedit" }
+    if (-not (Test-Path $Rcedit)) { throw "缺少图标工具。请先在源码目录运行 npm install。" }
     if (-not (Test-Path $IconPath)) { throw "missing icon $IconPath" }
     $tmpExe = Join-Path $env:TEMP ("software-manager-iconpatch-{0}.exe" -f [guid]::NewGuid().ToString("n"))
     try {
@@ -174,7 +176,7 @@ npm run build:exe
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 Pop-Location
 
-$ExeSrc = Join-Path $Root "src-tauri\target\release\software-manager.exe"
+$ExeSrc = Join-Path $env:CARGO_TARGET_DIR "release\software-manager.exe"
 if (-not (Test-Path $ExeSrc)) { throw "missing $ExeSrc" }
 Set-ExeIcon -ExePath $ExeSrc -IconPath $IconIco
 
@@ -221,7 +223,7 @@ Dev / hot-update:
 
 Console policy:
   All helper subprocesses must run hidden (no flashing cmd/powershell windows).
-  See software-manager-notes.md section "隐藏命令行窗口".
+  See 项目说明.md section "隐藏命令行窗口".
 "@ | Set-Content (Join-Path $ReleaseDir "README.txt") -Encoding UTF8
 
 if ($WithWebView2) {

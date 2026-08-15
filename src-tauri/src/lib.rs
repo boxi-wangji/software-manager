@@ -8,15 +8,19 @@ mod visual_target;
 
 use config::{
     get_app_install_paths_cmd, get_install_paths_cmd, get_package_cache_info_cmd,
-    open_cached_package_cmd, reset_install_paths_cmd, set_install_paths_cmd,
+    is_cached_installer_running_cmd, open_cached_package_cmd, reset_install_paths_cmd,
+    set_install_paths_cmd,
 };
 use custom_software::{
-    add_custom_software, clear_custom_software_icon, fetch_custom_software_icon,
-    get_custom_software, remove_custom_software, save_custom_software_icon_from_clipboard,
+    add_custom_software, clear_custom_software_icon, ensure_default_silent_install_profiles,
+    fetch_custom_software_icon, fetch_missing_custom_software_icons, get_custom_software,
+    remove_custom_software, save_custom_software_icon_from_clipboard,
 };
 use github::GithubRelease;
 use installer::{
-    cache_software_package, install_software, is_software_installed, uninstall_software,
+    cache_software_package, cancel_download_cmd, install_software, is_software_installed,
+    microsoft_store_package_version, pause_download_cmd, resume_download_cmd,
+    run_silent_installer_cmd, uninstall_software,
 };
 use ocr_install::launch_wegame_installer_cmd;
 use serde::{Deserialize, Serialize};
@@ -24,6 +28,7 @@ use software::{
     is_portable_target, software_list, source_kind_for, SoftwareAsset, SoftwareInfo,
     SoftwareSource, SoftwareTarget,
 };
+use tauri::Manager;
 use visual_target::{
     close_target_window_cmd, delete_automation_template_cmd, get_active_automation_template_cmd,
     get_automation_steps_cmd, get_automation_templates_cmd, get_visual_chains_cmd,
@@ -48,6 +53,8 @@ fn detect_arch() -> String {
 // 查所有软件的最新版信息�?
 #[tauri::command]
 async fn fetch_all_software() -> Result<Vec<SoftwareInfo>, String> {
+    // 旧配置没有这个字段时，只为已知的官网安装器补默认值，不覆盖用户参数。
+    let _ = ensure_default_silent_install_profiles();
     let list = software_list();
     let mut results = Vec::new();
 
@@ -56,6 +63,7 @@ async fn fetch_all_software() -> Result<Vec<SoftwareInfo>, String> {
             Ok(mut info) => {
                 info.ocr_install = target.ocr_install;
                 info.source_kind = source_kind_for(&target).into();
+                info.silent_install_args = target.silent_install_args.clone();
                 info.icon_path = target.icon_path.clone();
                 results.push(info);
             }
@@ -71,6 +79,7 @@ async fn fetch_all_software() -> Result<Vec<SoftwareInfo>, String> {
                     install_kind: target.install_kind.clone(),
                     source_kind: source_kind_for(&target).into(),
                     ocr_install: target.ocr_install,
+                    silent_install_args: target.silent_install_args.clone(),
                     icon_path: target.icon_path.clone(),
                 });
             }
@@ -98,6 +107,10 @@ async fn fetch_one_target(target: &SoftwareTarget) -> Result<SoftwareInfo, Strin
         }
         SoftwareSource::WegameOfficial => fetch_wegame_release(target).await,
         SoftwareSource::AmdAdrenalinOfficial => fetch_amd_adrenalin_release(target).await,
+        SoftwareSource::MicrosoftStore {
+            product_id,
+            package_name,
+        } => fetch_microsoft_store_release(target, product_id, package_name).await,
     }
 }
 
@@ -150,6 +163,7 @@ async fn fetch_one_github_release(
         install_kind: install_kind.into(),
         source_kind: "github".into(),
         ocr_install: false,
+        silent_install_args: String::new(),
         icon_path: String::new(),
     })
 }
@@ -194,6 +208,31 @@ async fn fetch_direct_download_release(
         install_kind: target.install_kind.clone(),
         source_kind: source_kind_for(target).into(),
         ocr_install: false,
+        silent_install_args: target.silent_install_args.clone(),
+        icon_path: target.icon_path.clone(),
+    })
+}
+
+async fn fetch_microsoft_store_release(
+    target: &SoftwareTarget,
+    product_id: &str,
+    package_name: &str,
+) -> Result<SoftwareInfo, String> {
+    let latest_version = microsoft_store_package_version(package_name)
+        .map(|version| format!("v{version}"))
+        .unwrap_or_else(|| "商店管理更新".into());
+
+    Ok(SoftwareInfo {
+        id: target.id.clone(),
+        display_name: target.display_name.clone(),
+        latest_version,
+        release_url: format!("https://apps.microsoft.com/detail/{product_id}"),
+        published_at: String::new(),
+        portable: None,
+        install_kind: target.install_kind.clone(),
+        source_kind: source_kind_for(target).into(),
+        ocr_install: false,
+        silent_install_args: target.silent_install_args.clone(),
         icon_path: target.icon_path.clone(),
     })
 }
@@ -215,6 +254,7 @@ struct DownloadCandidate {
     source_page: String,
     matcher: String,
     score: i32,
+    display_name: String,
 }
 
 #[tauri::command]
@@ -258,6 +298,7 @@ async fn scan_github_release_candidates(
             version: release.tag_name.clone(),
             size: if include_size { asset.size } else { 0 },
             source_page: release.html_url.clone(),
+            display_name: String::new(),
         })
         .collect();
     candidates.sort_by(|a, b| {
@@ -331,6 +372,60 @@ async fn resolve_direct_download(
     })
 }
 
+// Some vendors expose a stable update endpoint instead of a URL ending in .exe.
+// A HEAD request follows its redirect without downloading the installer body.
+async fn resolve_redirected_download(
+    client: &reqwest::Client,
+    source_url: &str,
+) -> Result<Option<ResolvedDirectDownload>, String> {
+    let response = match client.head(source_url).send().await {
+        Ok(response) => response,
+        Err(_) => return Ok(None),
+    };
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+
+    let final_url = response.url().to_string();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let file_name = response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(file_name_from_content_disposition)
+        .or_else(|| file_name_from_url(&final_url));
+    drop(response);
+
+    let file_name_looks_like_download = file_name
+        .as_deref()
+        .map(looks_like_download_url)
+        .unwrap_or(false);
+    if !looks_like_download_url(&final_url)
+        && !file_name_looks_like_download
+        && !looks_like_windows_installer_content_type(&content_type)
+    {
+        return Ok(None);
+    }
+    let Some(file_name) = file_name else {
+        return Ok(None);
+    };
+
+    Ok(Some(ResolvedDirectDownload {
+        download_url: final_url,
+        release_url: source_url.to_string(),
+        version: guess_version_from_file_name(&file_name)
+            .or_else(|| version_from_source_url(source_url))
+            .unwrap_or_else(|| "最新版本".into()),
+        published_at: String::new(),
+        file_name,
+    }))
+}
+
 async fn resolve_scanned_download(
     client: &reqwest::Client,
     source_url: &str,
@@ -363,12 +458,31 @@ async fn scan_download_candidates_internal(
             ]);
         }
     }
+    if is_vscode_official_source(source_url) {
+        if let Some(resolved) = resolve_vscode_download(client, source_url).await? {
+            return Ok(vec![
+                candidate_from_resolved(resolved, include_size, client).await,
+            ]);
+        }
+    }
     if is_wechat_official_source(source_url) {
         if let Some(resolved) = resolve_wechat_download(client, source_url).await? {
             return Ok(vec![
                 candidate_from_resolved(resolved, include_size, client).await,
             ]);
         }
+    }
+    if is_cursor_official_source(source_url) {
+        if let Some(resolved) = resolve_cursor_download(client, source_url).await? {
+            return Ok(vec![
+                candidate_from_resolved(resolved, include_size, client).await,
+            ]);
+        }
+    }
+    if let Some(resolved) = resolve_redirected_download(client, source_url).await? {
+        return Ok(vec![
+            candidate_from_resolved(resolved, include_size, client).await,
+        ]);
     }
     if looks_like_download_url(source_url) {
         let file_name = file_name_from_url(source_url).ok_or("无法从下载地址解析文件名")?;
@@ -388,6 +502,7 @@ async fn scan_download_candidates_internal(
             source_page: source_url.to_string(),
             matcher: derive_candidate_matcher(&file_name),
             score: score_download_candidate(source_url, &file_name),
+            display_name: display_name_from_download(source_url, &file_name),
         };
         return Ok(vec![candidate]);
     }
@@ -419,6 +534,7 @@ async fn scan_download_candidates_internal(
         } else {
             0
         };
+        let display_name = display_name_from_download(source_url, &file_name);
         candidates.push(DownloadCandidate {
             score: score_download_candidate(&candidate_url, &file_name),
             version: guess_version_from_file_name(&file_name)
@@ -429,6 +545,7 @@ async fn scan_download_candidates_internal(
             file_name,
             size,
             source_page: source_url.to_string(),
+            display_name,
         });
     }
 
@@ -452,6 +569,7 @@ async fn candidate_from_resolved(
     } else {
         0
     };
+    let display_name = display_name_from_download(&resolved.release_url, &resolved.file_name);
     DownloadCandidate {
         score: score_download_candidate(&resolved.download_url, &resolved.file_name) + 100,
         matcher: derive_candidate_matcher(&resolved.file_name),
@@ -460,6 +578,7 @@ async fn candidate_from_resolved(
         version: resolved.version,
         size,
         source_page: resolved.release_url,
+        display_name,
     }
 }
 
@@ -476,6 +595,16 @@ async fn resolve_official_download(
     for candidate in candidates {
         if is_qq_official_source(&candidate) {
             if let Some(resolved) = resolve_qq_download(client, &candidate).await? {
+                return Ok(Some(resolved));
+            }
+        }
+        if is_vscode_official_source(&candidate) {
+            if let Some(resolved) = resolve_vscode_download(client, &candidate).await? {
+                return Ok(Some(resolved));
+            }
+        }
+        if is_cursor_official_source(&candidate) {
+            if let Some(resolved) = resolve_cursor_download(client, &candidate).await? {
                 return Ok(Some(resolved));
             }
         }
@@ -501,6 +630,175 @@ fn is_wechat_official_source(url: &str) -> bool {
     lower.contains("pc.weixin.qq.com")
         || lower.contains("windows.weixin.qq.com")
         || lower.contains("dldir1v6.qq.com/weixin/")
+}
+
+fn is_vscode_official_source(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let is_official_host = parsed
+        .host_str()
+        .map(|host| host.eq_ignore_ascii_case("code.visualstudio.com"))
+        .unwrap_or(false);
+    is_official_host && matches!(parsed.path(), "/thank-you" | "/sha/download")
+}
+
+fn is_cursor_official_source(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    matches!(
+        parsed.host_str().map(|host| host.to_ascii_lowercase()),
+        Some(host)
+            if host == "cursor.com"
+                || host == "www.cursor.com"
+                || host == "api2.cursor.sh"
+                || host == "downloads.cursor.com"
+    )
+}
+
+fn is_cursor_download_page(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let is_cursor_site = matches!(
+        parsed.host_str().map(|host| host.to_ascii_lowercase()),
+        Some(host) if host == "cursor.com" || host == "www.cursor.com"
+    );
+    is_cursor_site && parsed.path().trim_end_matches('/').ends_with("/download")
+}
+
+fn cursor_windows_user_platform() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "win32-arm64-user"
+    } else {
+        "win32-x64-user"
+    }
+}
+
+fn find_cursor_download_endpoint(html: &str, platform: &str) -> Option<String> {
+    let needle = format!("api2.cursor.sh/updates/download/golden/{platform}/cursor/");
+    find_url_containing(html, &needle)
+}
+
+async fn resolve_cursor_download(
+    client: &reqwest::Client,
+    source_url: &str,
+) -> Result<Option<ResolvedDirectDownload>, String> {
+    if !is_cursor_download_page(source_url) {
+        return resolve_redirected_download(client, source_url).await;
+    }
+
+    let html = fetch_text(client, source_url).await?;
+    let Some(endpoint) = find_cursor_download_endpoint(&html, cursor_windows_user_platform())
+    else {
+        return Ok(None);
+    };
+    let mut resolved = resolve_redirected_download(client, &endpoint).await?;
+    if let Some(download) = resolved.as_mut() {
+        download.release_url = source_url.to_string();
+    }
+    Ok(resolved)
+}
+
+fn vscode_download_endpoint(source_url: &str) -> Option<String> {
+    let source = reqwest::Url::parse(source_url).ok()?;
+    if !source
+        .host_str()
+        .map(|host| host.eq_ignore_ascii_case("code.visualstudio.com"))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    let params: std::collections::HashMap<String, String> = source
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    let build = params
+        .get("build")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| "stable".into());
+    let default_os = if cfg!(target_arch = "aarch64") {
+        "win32-arm64-user"
+    } else {
+        "win32-x64-user"
+    };
+    let os = match source.path() {
+        "/sha/download" => params
+            .get("os")
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| default_os.into()),
+        "/thank-you" => match params.get("dv").map(|value| value.as_str()) {
+            Some("win64user") | Some("win") => "win32-x64-user".into(),
+            Some("win64") => "win32-x64".into(),
+            Some("winzip") => "win32-x64-archive".into(),
+            Some("win32arm64user") => "win32-arm64-user".into(),
+            Some("win32arm64setup") => "win32-arm64".into(),
+            Some("win32arm64zip") => "win32-arm64-archive".into(),
+            _ => default_os.into(),
+        },
+        _ => return None,
+    };
+
+    let mut endpoint = reqwest::Url::parse("https://code.visualstudio.com/sha/download").ok()?;
+    endpoint
+        .query_pairs_mut()
+        .append_pair("build", &build)
+        .append_pair("os", &os);
+    Some(endpoint.into())
+}
+
+async fn resolve_vscode_download(
+    _client: &reqwest::Client,
+    source_url: &str,
+) -> Result<Option<ResolvedDirectDownload>, String> {
+    let Some(endpoint) = vscode_download_endpoint(source_url) else {
+        return Ok(None);
+    };
+    let no_redirect_client = reqwest::Client::builder()
+        .user_agent("software-manager")
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = no_redirect_client
+        .get(&endpoint)
+        .send()
+        .await
+        .map_err(|e| format!("无法读取 VS Code 官方下载入口: {e}"))?;
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| absolutize_url(value, &endpoint));
+    let Some(download_url) = location else {
+        return Err(format!(
+            "VS Code 官方下载入口没有返回安装包地址（HTTP {}）",
+            response.status()
+        ));
+    };
+    let file_name =
+        file_name_from_url(&download_url).ok_or("无法从 VS Code 官方下载地址解析文件名")?;
+    Ok(Some(ResolvedDirectDownload {
+        download_url,
+        release_url: source_url.to_string(),
+        version: guess_version_from_file_name(&file_name)
+            .unwrap_or_else(|| "Visual Studio Code 最新版".into()),
+        published_at: String::new(),
+        file_name,
+    }))
+}
+
+fn display_name_from_download(source_url: &str, _file_name: &str) -> String {
+    if is_vscode_official_source(source_url) {
+        "Visual Studio Code".into()
+    } else if is_cursor_official_source(source_url) {
+        "Cursor".into()
+    } else {
+        String::new()
+    }
 }
 
 async fn resolve_qq_download(
@@ -891,6 +1189,31 @@ fn looks_like_download_url(url: &str) -> bool {
     .any(|suffix| lower.ends_with(suffix))
 }
 
+fn looks_like_windows_installer_content_type(content_type: &str) -> bool {
+    let lower = content_type.to_ascii_lowercase();
+    lower.contains("application/x-msdos-program")
+        || lower.contains("application/x-msdownload")
+        || lower.contains("application/vnd.microsoft.portable-executable")
+}
+
+fn file_name_from_content_disposition(value: &str) -> Option<String> {
+    for part in value.split(';') {
+        let Some((name, raw_value)) = part.trim().split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.eq_ignore_ascii_case("filename") && !name.eq_ignore_ascii_case("filename*") {
+            continue;
+        }
+        let raw_value = raw_value.trim().trim_matches(['\"', '\'']);
+        let file_name = raw_value.rsplit("''").next().unwrap_or(raw_value);
+        if !file_name.is_empty() {
+            return Some(file_name.to_string());
+        }
+    }
+    None
+}
+
 fn normalize_user_url(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1174,6 +1497,7 @@ async fn fetch_wegame_release(target: &SoftwareTarget) -> Result<SoftwareInfo, S
         install_kind: target.install_kind.clone(),
         source_kind: "official".into(),
         ocr_install: target.ocr_install,
+        silent_install_args: target.silent_install_args.clone(),
         icon_path: target.icon_path.clone(),
     })
 }
@@ -1213,6 +1537,7 @@ async fn fetch_amd_adrenalin_release(target: &SoftwareTarget) -> Result<Software
         install_kind: target.install_kind.clone(),
         source_kind: "official".into(),
         ocr_install: target.ocr_install,
+        silent_install_args: target.silent_install_args.clone(),
         icon_path: target.icon_path.clone(),
     })
 }
@@ -1443,6 +1768,36 @@ fn exit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+fn is_valid_microsoft_store_product_id(product_id: &str) -> bool {
+    product_id.len() == 12
+        && product_id
+            .chars()
+            .all(|character| character.is_ascii_uppercase() || character.is_ascii_digit())
+}
+
+#[tauri::command]
+fn open_microsoft_store_cmd(product_id: String) -> Result<(), String> {
+    let product_id = product_id.trim().to_ascii_uppercase();
+    if !is_valid_microsoft_store_product_id(&product_id) {
+        return Err("Microsoft Store 产品编号无效".into());
+    }
+
+    #[cfg(windows)]
+    {
+        let uri = format!("ms-windows-store://pdp/?productid={product_id}");
+        std::process::Command::new("explorer.exe")
+            .arg(uri)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("无法打开 Microsoft Store: {error}"))
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("当前系统不支持 Microsoft Store".into())
+    }
+}
+
 #[cfg(windows)]
 fn wide_null(value: &std::ffi::OsStr) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
@@ -1507,42 +1862,396 @@ fn restart_as_admin_cmd(_app: tauri::AppHandle) -> Result<(), String> {
     Err("当前平台不需要管理员重启".into())
 }
 
+#[derive(Serialize)]
+struct WingetStatus {
+    available: bool,
+    version: String,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WingetSearchResult {
+    name: String,
+    package_id: String,
+    version: String,
+}
+
+fn winget_command() -> std::process::Command {
+    let mut command = std::process::Command::new("winget");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command
+}
+
+fn is_winget_table_separator(line: &str) -> bool {
+    let characters: Vec<char> = line
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    characters.len() >= 3
+        && characters
+            .iter()
+            .all(|character| *character == '-' || *character == '─')
+}
+
+fn split_winget_columns(line: &str) -> Vec<String> {
+    let mut columns = Vec::new();
+    let mut current = String::new();
+    let mut whitespace = 0usize;
+
+    for character in line.chars() {
+        if character.is_whitespace() {
+            whitespace += 1;
+            continue;
+        }
+
+        if whitespace >= 2 && !current.trim().is_empty() {
+            columns.push(current.trim_end().to_string());
+            current.clear();
+        } else if whitespace == 1 && !current.is_empty() {
+            current.push(' ');
+        }
+        whitespace = 0;
+        current.push(character);
+    }
+
+    if !current.trim().is_empty() {
+        columns.push(current.trim_end().to_string());
+    }
+    columns
+}
+
+fn is_likely_winget_package_id(value: &str) -> bool {
+    let is_valid = !value.is_empty()
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        });
+    let is_store_id = value.len() >= 10
+        && value
+            .chars()
+            .all(|character| character.is_ascii_uppercase() || character.is_ascii_digit());
+
+    is_valid && !looks_like_winget_version(value) && (value.contains('.') || is_store_id)
+}
+
+fn looks_like_winget_version(value: &str) -> bool {
+    let value = value.strip_prefix(['v', 'V']).unwrap_or(value);
+    let Some(first_part) = value.split(['.', '-', '_']).next() else {
+        return false;
+    };
+
+    !first_part.is_empty()
+        && first_part
+            .chars()
+            .all(|character| character.is_ascii_digit())
+        && value.contains('.')
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+}
+
+fn parse_compact_winget_result(line: &str) -> Option<WingetSearchResult> {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let package_id_index = words.iter().enumerate().find_map(|(index, value)| {
+        if index > 0 && is_likely_winget_package_id(value) {
+            Some(index)
+        } else {
+            None
+        }
+    })?;
+
+    Some(WingetSearchResult {
+        name: words[..package_id_index].join(" "),
+        package_id: words[package_id_index].to_string(),
+        version: words
+            .get(package_id_index + 1)
+            .copied()
+            .unwrap_or_default()
+            .to_string(),
+    })
+}
+
+fn parse_winget_search_results(output: &str) -> Vec<WingetSearchResult> {
+    let mut found_table = false;
+    let mut results = Vec::new();
+
+    for raw_line in output.lines() {
+        let line = raw_line.trim();
+        if is_winget_table_separator(line) {
+            found_table = true;
+            continue;
+        }
+        if !found_table || line.is_empty() {
+            continue;
+        }
+
+        let columns = split_winget_columns(line);
+        let parsed = columns
+            .get(1)
+            .filter(|package_id| is_likely_winget_package_id(package_id))
+            .map(|package_id| WingetSearchResult {
+                name: columns[0].clone(),
+                package_id: package_id.clone(),
+                version: columns
+                    .get(2)
+                    .and_then(|column| column.split_whitespace().next())
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+            .or_else(|| parse_compact_winget_result(line));
+
+        if let Some(result) = parsed {
+            results.push(result);
+        }
+    }
+
+    results
+}
+
 #[tauri::command]
-async fn winget_cli_install_cmd(path: String) -> Result<(), String> {
-    // 1. Run Add-AppxPackage
-    let out = std::process::Command::new("powershell")
-        .args(&[
-            "-NoProfile",
-            "-Command",
-            &format!("Add-AppxPackage -Path '{}'", path),
-        ])
-        .output()
-        .map_err(|e| format!("PowerShell error: {}", e))?;
+fn get_winget_status_cmd() -> WingetStatus {
+    match winget_command().arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            WingetStatus {
+                available: true,
+                version,
+                message: "本机已安装 Winget".into(),
+            }
+        }
+        Ok(output) => {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            WingetStatus {
+                available: false,
+                version: String::new(),
+                message: if detail.is_empty() {
+                    "Winget 当前不可用".into()
+                } else {
+                    detail
+                },
+            }
+        }
+        Err(_) => WingetStatus {
+            available: false,
+            version: String::new(),
+            message: "未检测到 Winget".into(),
+        },
+    }
+}
 
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("安装失败: {}", err));
+#[tauri::command]
+fn search_winget_packages_cmd(query: String) -> Result<Vec<WingetSearchResult>, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
     }
 
-    // 2. Run winget settings (this requires admin rights, and might fail if we are not elevated. But the app tries its best)
-    let out2 = std::process::Command::new("powershell")
-        .args(&[
-            "-NoProfile",
-            "-Command",
-            "winget settings --enable BypassCertificatePinningForMicrosoftStore",
+    let output = winget_command()
+        .args([
+            "search",
+            "--query",
+            query,
+            "--count",
+            "12",
+            "--accept-source-agreements",
+            "--disable-interactivity",
         ])
         .output()
-        .map_err(|e| format!("Winget error: {}", e))?;
+        .map_err(|error| format!("无法运行 Winget 搜索: {error}"))?;
 
-    if !out2.status.success() {
-        let err = String::from_utf8_lossy(&out2.stderr);
-        return Err(format!(
-            "安装成功，但配置 BypassCertificatePinningForMicrosoftStore 失败: {}",
-            err
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            "Winget 搜索失败".into()
+        } else {
+            detail
+        });
+    }
+
+    Ok(parse_winget_search_results(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+#[tauri::command]
+fn open_winget_terminal_cmd() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let start_dir = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into());
+        std::process::Command::new("wt.exe")
+            .args(["-p", "PowerShell 7", "-d", &start_dir])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("无法打开 PowerShell 7: {e}"))
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("当前系统不支持 Winget".into())
+    }
+}
+
+#[cfg(test)]
+mod winget_search_tests {
+    use super::{is_valid_microsoft_store_product_id, parse_winget_search_results};
+
+    #[test]
+    fn validates_microsoft_store_product_ids() {
+        assert!(is_valid_microsoft_store_product_id("9PLM9XGG6VKS"));
+        assert!(!is_valid_microsoft_store_product_id("9PLM9XGG6VK"));
+        assert!(!is_valid_microsoft_store_product_id("9PLM9XGG6VKS!"));
+    }
+
+    #[test]
+    fn parses_name_id_and_version_from_winget_table() {
+        let results = parse_winget_search_results(
+            "名称                     ID                         版本\n\
+             ----------------------------------------------------------\n\
+             Google Chrome (EXE)      Google.Chrome.EXE          150.0.7871.182 ProductCode: google chrome winget\n\
+             Google Chrome            Google.Chrome              150.0.7871.182                            winget\n",
+        );
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].name, "Google Chrome (EXE)");
+        assert_eq!(results[0].package_id, "Google.Chrome.EXE");
+        assert_eq!(results[0].version, "150.0.7871.182");
+        assert_eq!(results[1].package_id, "Google.Chrome");
+    }
+
+    #[test]
+    fn parses_compact_winget_rows_without_column_padding() {
+        let results = parse_winget_search_results(
+            "名称      ID                  版本   源\n\
+             --------------------------------------------\n\
+             LocalSend LocalSend.LocalSend 1.17.0 winget\n\
+             Google Chrome Google.Chrome 150.0.7871.182 winget\n",
+        );
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].name, "LocalSend");
+        assert_eq!(results[0].package_id, "LocalSend.LocalSend");
+        assert_eq!(results[0].version, "1.17.0");
+        assert_eq!(results[1].name, "Google Chrome");
+        assert_eq!(results[1].package_id, "Google.Chrome");
+    }
+
+    #[test]
+    fn does_not_treat_a_version_as_the_package_id() {
+        let results = parse_winget_search_results(
+            "名称                    ID                           版本    匹配        源\n\
+             -------------------------------------------------------------------------------\n\
+             Go Programming Language GoLang.Go                    1.26.5  Moniker: go winget\n",
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "Go Programming Language");
+        assert_eq!(results[0].package_id, "GoLang.Go");
+        assert_eq!(results[0].version, "1.26.5");
+    }
+}
+
+#[cfg(test)]
+mod direct_download_tests {
+    use super::{
+        display_name_from_download, file_name_from_content_disposition,
+        find_cursor_download_endpoint, is_cursor_official_source, resolve_cursor_download,
+        resolve_redirected_download, vscode_download_endpoint,
+    };
+
+    #[test]
+    fn maps_vscode_thank_you_link_to_stable_user_installer() {
+        assert_eq!(
+            vscode_download_endpoint("https://code.visualstudio.com/thank-you?dv=win64user")
+                .as_deref(),
+            Some("https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-user")
+        );
+    }
+
+    #[test]
+    fn preserves_a_vscode_insider_download_channel() {
+        assert_eq!(
+            vscode_download_endpoint(
+                "https://code.visualstudio.com/sha/download?build=insider&os=win32-arm64-user"
+            )
+            .as_deref(),
+            Some("https://code.visualstudio.com/sha/download?build=insider&os=win32-arm64-user")
+        );
+    }
+
+    #[test]
+    fn recognizes_cursor_download_page_and_update_endpoint() {
+        assert!(is_cursor_official_source("https://cursor.com/download"));
+        assert!(is_cursor_official_source(
+            "https://api2.cursor.sh/updates/download/golden/win32-x64-user/cursor/3.12"
         ));
+        assert_eq!(
+            display_name_from_download(
+                "https://api2.cursor.sh/updates/download/golden/win32-x64-user/cursor/3.12",
+                "CursorUserSetup-x64-3.12.30.exe",
+            ),
+            "Cursor"
+        );
     }
 
-    Ok(())
+    #[test]
+    fn finds_cursor_windows_user_update_endpoint_in_official_page() {
+        let html = r#"
+            <a href="https://api2.cursor.sh/updates/download/golden/win32-x64-user/cursor/3.12">
+              Windows (x64) (User)
+            </a>
+        "#;
+        assert_eq!(
+            find_cursor_download_endpoint(html, "win32-x64-user").as_deref(),
+            Some("https://api2.cursor.sh/updates/download/golden/win32-x64-user/cursor/3.12")
+        );
+    }
+
+    #[test]
+    fn reads_download_file_name_from_content_disposition() {
+        assert_eq!(
+            file_name_from_content_disposition(
+                "attachment; filename=CursorUserSetup-x64-3.12.30.exe"
+            ),
+            Some("CursorUserSetup-x64-3.12.30.exe".into())
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Cursor's live download service"]
+    fn resolves_cursor_links_to_installer() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Tokio runtime");
+        let resolved = runtime.block_on(async {
+            let client = reqwest::Client::builder()
+                .user_agent("software-manager-test")
+                .build()
+                .expect("HTTP client");
+            let direct = resolve_redirected_download(
+                &client,
+                "https://api2.cursor.sh/updates/download/golden/win32-x64-user/cursor/3.12",
+            )
+            .await
+            .expect("API redirect lookup")
+            .expect("API installer redirect");
+            let page = resolve_cursor_download(&client, "https://cursor.com/download")
+                .await
+                .expect("official page lookup")
+                .expect("official page installer");
+            (direct, page)
+        });
+
+        for result in [resolved.0, resolved.1] {
+            assert!(result.download_url.ends_with(".exe"));
+            assert!(result.file_name.starts_with("CursorUserSetup-x64-"));
+            assert!(result.version.starts_with('v'));
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1550,11 +2259,22 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // 便携版图标位于 exe 同目录；运行时按实际路径放行，避免资源协议出现破图。
+            if let Ok(icon_dir) = crate::config::data_dir().map(|dir| dir.join("icons")) {
+                let _ = app.asset_protocol_scope().allow_directory(icon_dir, true);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             detect_arch,
             fetch_all_software,
             install_software,
             cache_software_package,
+            pause_download_cmd,
+            resume_download_cmd,
+            cancel_download_cmd,
+            run_silent_installer_cmd,
             uninstall_software,
             is_software_installed,
             get_install_paths_cmd,
@@ -1563,6 +2283,7 @@ pub fn run() {
             get_app_install_paths_cmd,
             get_package_cache_info_cmd,
             open_cached_package_cmd,
+            is_cached_installer_running_cmd,
             launch_wegame_installer_cmd,
             get_visual_rules_cmd,
             save_visual_rules_cmd,
@@ -1584,6 +2305,7 @@ pub fn run() {
             get_custom_software,
             remove_custom_software,
             fetch_custom_software_icon,
+            fetch_missing_custom_software_icons,
             save_custom_software_icon_from_clipboard,
             clear_custom_software_icon,
             pick_screen_color_cmd,
@@ -1591,7 +2313,10 @@ pub fn run() {
             is_elevated_cmd,
             restart_as_admin_cmd,
             exit_app,
-            winget_cli_install_cmd,
+            get_winget_status_cmd,
+            search_winget_packages_cmd,
+            open_winget_terminal_cmd,
+            open_microsoft_store_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

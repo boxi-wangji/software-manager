@@ -1,5 +1,8 @@
 use std::fs;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +15,18 @@ struct AppConfig {
 pub struct InstallPathSettings {
     pub default_base: String,
     pub current_base: String,
+}
+
+#[derive(Serialize)]
+pub struct PackageLaunchResult {
+    pub message: String,
+    pub tracked: bool,
+}
+
+static RUNNING_INSTALLERS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+fn running_installers() -> &'static Mutex<HashSet<PathBuf>> {
+    RUNNING_INSTALLERS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 /// 便携版根目录 = exe 所在文件夹
@@ -205,12 +220,72 @@ pub fn get_package_cache_info_cmd(
 }
 
 #[tauri::command]
-pub fn open_cached_package_cmd(path: String) -> Result<(), String> {
-    let file = PathBuf::from(path.trim());
+pub fn open_cached_package_cmd(path: String) -> Result<PackageLaunchResult, String> {
+    let file = PathBuf::from(path.trim())
+        .canonicalize()
+        .map_err(|_| "安装包文件不存在，请重新下载".to_string())?;
     if !file.is_file() {
         return Err("安装包文件不存在，请重新下载".into());
     }
-    open::that(&file).map_err(|e| format!("无法打开安装包: {}", e))
+
+    let is_exe = file
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"));
+    if !is_exe {
+        open::that(&file).map_err(|e| format!("无法打开安装包: {}", e))?;
+        return Ok(PackageLaunchResult {
+            message: "已打开安装包".into(),
+            tracked: false,
+        });
+    }
+
+    {
+        let mut active = running_installers()
+            .lock()
+            .map_err(|_| "无法读取安装器状态，请重试".to_string())?;
+        if !active.insert(file.clone()) {
+            return Err("安装器正在运行，请不要重复启动".into());
+        }
+    }
+
+    let mut command = Command::new(&file);
+    if let Some(parent) = file.parent() {
+        command.current_dir(parent);
+    }
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Ok(mut active) = running_installers().lock() {
+                active.remove(&file);
+            }
+            return Err(format!("无法启动安装器: {}", error));
+        }
+    };
+
+    let running_file = file.clone();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        if let Ok(mut active) = running_installers().lock() {
+            active.remove(&running_file);
+        }
+    });
+
+    Ok(PackageLaunchResult {
+        message: "安装器正在运行".into(),
+        tracked: true,
+    })
+}
+
+#[tauri::command]
+pub fn is_cached_installer_running_cmd(path: String) -> Result<bool, String> {
+    let file = PathBuf::from(path.trim())
+        .canonicalize()
+        .map_err(|_| "安装包文件不存在，请重新下载".to_string())?;
+    Ok(running_installers()
+        .lock()
+        .map_err(|_| "无法读取安装器状态，请重试".to_string())?
+        .contains(&file))
 }
 
 #[tauri::command]

@@ -868,6 +868,11 @@ option {
   background: rgba(240, 138, 93, 0.1);
 }
 
+.library-filter-store.is-active {
+  border-color: rgba(93, 181, 240, 0.4);
+  background: rgba(93, 181, 240, 0.12);
+}
+
 .col-source {
   display: flex;
   align-items: center;
@@ -895,6 +900,12 @@ option {
   color: #ffb38f;
   background: rgba(240, 138, 93, 0.12);
   border: 1px solid rgba(240, 138, 93, 0.22);
+}
+
+.source-store {
+  color: #9fd5ff;
+  background: rgba(93, 181, 240, 0.12);
+  border: 1px solid rgba(93, 181, 240, 0.24);
 }
 
 .row-action-hint {
@@ -1539,6 +1550,861 @@ option {
   background: rgba(226, 232, 240, 0.18);
 }
 
+.sidebar-nav-icon-image {
+  object-fit: cover;
+  background: transparent;
+  border: 1px solid rgba(226, 232, 240, 0.16);
+}
+
+.winget-page-head {
+  align-items: center;
+}
+
+.winget-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.winget-page-logo {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  object-fit: cover;
+  border: 1px solid rgba(226, 232, 240, 0.14);
+  border-radius: var(--radius);
+}
+
+.winget-status-panel,
+.winget-action-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.024);
+}
+
+.winget-status-main,
+.winget-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.winget-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.winget-status-dot.is-ready {
+  background: var(--accent);
+}
+
+.winget-status-label,
+.winget-status-panel p,
+.winget-action-panel p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.winget-status-main strong {
+  color: var(--text);
+}
+
+.winget-status-main code {
+  padding: 4px 7px;
+  border: 1px solid rgba(94, 224, 194, 0.2);
+  border-radius: var(--radius);
+  color: var(--accent);
+  background: rgba(94, 224, 194, 0.06);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+.winget-action-panel h3 {
+  margin: 0 0 5px;
+  font-size: 14px;
+}
+
+.winget-card-section {
+  display: grid;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.winget-section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.winget-section-heading h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.winget-section-heading > p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.winget-section-kicker {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.winget-builder-card,
+.winget-user-card,
+.winget-card-form,
+.winget-category-form {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.024);
+}
+
+.winget-builder-card:hover,
+.winget-user-card:hover {
+  border-color: rgba(94, 224, 194, 0.3);
+  background: rgba(94, 224, 194, 0.045);
+}
+
+.winget-user-card-top h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.winget-section-heading > p code {
+  color: var(--accent);
+  font-family: var(--mono);
+}
+
+.winget-card-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.winget-card-input {
+  min-height: 34px;
+  padding: 7px 9px;
+}
+
+.winget-card-input:focus {
+  border-color: rgba(94, 224, 194, 0.46);
+}
+
+.winget-builder-card {
+  gap: 12px;
+  padding: 14px;
+}
+
+.winget-builder-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.winget-name-field {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.winget-name-field > span {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.winget-builder-actions {
+  display: flex;
+  min-height: 34px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.024);
+}
+
+.winget-builder-action {
+  min-width: 56px;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.winget-builder-action:hover,
+.winget-builder-action.is-active {
+  border-color: rgba(94, 224, 194, 0.4);
+  background: rgba(94, 224, 194, 0.1);
+  color: var(--accent);
+}
+
+.winget-builder-output {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(2, auto);
+  align-items: center;
+  gap: 10px;
+}
+
+.winget-builder-output code {
+  display: block;
+  min-width: 0;
+  min-height: 38px;
+  padding: 7px 8px;
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.08);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.winget-card-copy {
+  justify-self: start;
+  min-width: 72px;
+}
+
+.winget-card-copy.is-copied {
+  border-color: rgba(94, 224, 194, 0.48);
+  color: var(--accent);
+}
+
+.winget-search-results {
+  display: grid;
+  gap: 8px;
+}
+
+.winget-search-results-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.winget-search-results-head h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.winget-search-results-head span {
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.winget-search-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.024);
+}
+
+.winget-search-result:hover {
+  border-color: rgba(94, 224, 194, 0.3);
+  background: rgba(94, 224, 194, 0.045);
+}
+
+.winget-search-result > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.winget-search-result strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.winget-search-result code {
+  overflow: hidden;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.winget-search-result span {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.winget-user-card-heading {
+  align-items: center;
+}
+
+.winget-category-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.winget-category-list {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.winget-category-user {
+  display: inline-flex;
+  position: relative;
+  align-items: center;
+  gap: 3px;
+  transition:
+    opacity 0.18s ease,
+    filter 0.18s ease;
+}
+
+.winget-category-user.is-dragging {
+  opacity: 0.3;
+  filter: saturate(0.65);
+}
+
+.winget-category-user.is-drag-over .winget-category-filter {
+  border-color: rgba(94, 224, 194, 0.72);
+  background: rgba(94, 224, 194, 0.14);
+  box-shadow: 0 0 0 2px rgba(94, 224, 194, 0.12);
+}
+
+.winget-category-filter {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.024);
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.winget-category-user .winget-category-filter {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.winget-category-user .winget-category-filter:active {
+  cursor: grabbing;
+}
+
+.winget-category-filter span {
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.winget-category-filter:hover,
+.winget-category-filter.is-active {
+  border-color: rgba(94, 224, 194, 0.42);
+  background: rgba(94, 224, 194, 0.1);
+  color: var(--accent);
+}
+
+.winget-category-filter.is-active span {
+  color: var(--accent);
+}
+
+.winget-category-delete-button {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font: inherit;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.winget-category-delete-button:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.winget-category-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10000;
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px;
+  overflow: hidden;
+  border: 1px solid rgba(94, 224, 194, 0.65);
+  border-radius: 6px;
+  background: rgba(20, 25, 34, 0.98);
+  box-shadow:
+    0 12px 34px rgba(0, 0, 0, 0.48),
+    0 0 0 1px rgba(94, 224, 194, 0.12);
+  color: var(--text);
+  pointer-events: none;
+  will-change: transform;
+  animation: winget-card-ghost-enter 0.18s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.winget-category-drag-ghost .winget-drag-handle-mark {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.winget-category-drag-ghost strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.winget-add-category-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.winget-add-category-button > span {
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.winget-category-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.winget-selection-count {
+  min-width: 56px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: right;
+}
+
+.winget-selection-count.is-active {
+  color: var(--accent);
+}
+
+.winget-selection-copy,
+.winget-selection-save {
+  min-width: 112px;
+}
+
+.winget-add-card-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.winget-add-card-button > span {
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.winget-card-form {
+  grid-template-columns: minmax(140px, 0.7fr) minmax(130px, 0.5fr) minmax(220px, 1.3fr) auto;
+  align-items: start;
+}
+
+.winget-category-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.winget-category-form > .winget-card-input {
+  flex: 1 1 220px;
+}
+
+.winget-card-category-select {
+  cursor: pointer;
+}
+
+.winget-card-form-command {
+  min-height: 72px;
+  resize: vertical;
+  font-family: var(--mono);
+  line-height: 1.45;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.winget-card-form-command::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+.winget-card-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.winget-card-form-error {
+  width: 100%;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.winget-user-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.winget-user-card {
+  grid-template-rows: auto auto;
+  align-content: space-between;
+  min-height: 94px;
+}
+
+.winget-user-card-grid.is-reordering .winget-user-card {
+  position: relative;
+  z-index: 1;
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.winget-user-card-grid.is-reordering .winget-user-card.is-dragging {
+  z-index: 0;
+  opacity: 0.28;
+  background: rgba(94, 224, 194, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(94, 224, 194, 0.28);
+  transition:
+    opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.winget-user-card.is-drag-over {
+  border-color: rgba(94, 224, 194, 0.62);
+  background: rgba(94, 224, 194, 0.09);
+  box-shadow: inset 0 2px 0 var(--accent);
+  transition:
+    background-color 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.winget-user-card-top {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.winget-user-card-top h4 {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.winget-user-card-footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.winget-drag-handle {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition:
+    color 0.18s ease,
+    background-color 0.18s ease,
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.winget-drag-handle:hover {
+  border-color: rgba(94, 224, 194, 0.42);
+  background: rgba(94, 224, 194, 0.08);
+  color: var(--accent);
+  transform: scale(1.08);
+}
+
+.winget-drag-handle:active {
+  cursor: grabbing;
+}
+
+body.is-winget-card-dragging .winget-drag-handle {
+  cursor: grabbing;
+  color: var(--accent);
+  background: rgba(94, 224, 194, 0.18);
+  transform: scale(1.12);
+}
+
+.winget-drag-handle-mark {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 5px currentColor, 0 10px currentColor, 5px 0 currentColor, 5px 5px currentColor, 5px 10px currentColor;
+}
+
+.winget-card-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10000;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  padding: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(94, 224, 194, 0.55);
+  border-radius: var(--radius);
+  background: rgba(20, 25, 34, 0.98);
+  box-shadow:
+    0 18px 52px rgba(0, 0, 0, 0.58),
+    0 0 0 1px rgba(94, 224, 194, 0.14),
+    0 0 28px rgba(94, 224, 194, 0.16);
+  color: var(--text);
+  pointer-events: none;
+  will-change: transform;
+  animation: winget-card-ghost-enter 0.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.winget-card-drag-ghost-head {
+  display: flex;
+  min-width: 0;
+  align-items: start;
+  gap: 10px;
+}
+
+.winget-card-drag-ghost-head .winget-drag-handle-mark {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.winget-card-drag-ghost-head strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+@keyframes winget-card-ghost-enter {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+body.is-winget-card-dragging,
+body.is-winget-card-dragging *,
+body.is-winget-category-dragging,
+body.is-winget-category-dragging * {
+  cursor: grabbing !important;
+}
+
+.winget-user-card-tools {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.winget-select-card {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.winget-select-card:hover {
+  border-color: rgba(94, 224, 194, 0.42);
+  background: rgba(94, 224, 194, 0.08);
+}
+
+.winget-select-card input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.winget-edit-card-button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.winget-edit-card-button:hover {
+  border-color: rgba(94, 224, 194, 0.42);
+  background: rgba(94, 224, 194, 0.1);
+  color: var(--accent);
+}
+
+.winget-user-card-editing {
+  grid-template-rows: auto auto minmax(86px, auto) auto;
+}
+
+.winget-delete-card-button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font: inherit;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.winget-delete-card-button:hover {
+  border-color: rgba(242, 127, 134, 0.42);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+
+@media (max-width: 700px) {
+  .winget-status-panel,
+  .winget-action-panel,
+  .winget-section-heading,
+  .winget-category-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .winget-category-actions {
+    justify-content: flex-start;
+  }
+
+  .winget-category-form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .winget-status-main,
+  .winget-action-buttons {
+    flex-wrap: wrap;
+  }
+
+  .winget-card-form,
+  .winget-user-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .winget-builder-controls,
+  .winget-builder-output {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .winget-search-result {
+    grid-template-columns: 1fr;
+  }
+
+  .winget-builder-actions {
+    width: 100%;
+  }
+
+  .winget-builder-action {
+    flex: 1;
+  }
+
+  .winget-card-copy {
+    width: 100%;
+  }
+}
+
 .sidebar-nav-badge {
   margin-left: auto;
   font-size: 10px;
@@ -1564,7 +2430,16 @@ option {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  -ms-overflow-style: none;
   padding: 20px 24px 24px;
+  scrollbar-width: none;
+}
+
+.page-stack::-webkit-scrollbar,
+.auto-page::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .page-head {
@@ -3024,4 +3899,110 @@ body.is-step-dragging * {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+/* 链接识别弹窗：主流程只展示识别结果，复杂规则收进高级设置。 */
+.custom-software-modal {
+  width: 620px;
+  max-height: min(760px, 88vh);
+  overflow-y: auto;
+  border-radius: 8px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.custom-software-modal::-webkit-scrollbar,
+.scan-candidates::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.custom-source-intro {
+  margin: -8px 0 20px;
+  color: #8f9bb0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.link-recognition {
+  display: grid;
+  gap: 10px;
+  margin: -2px 0 18px;
+  padding: 12px 0 0 14px;
+  border-top: 1px solid rgba(130, 148, 180, 0.18);
+  border-left: 2px solid #5de4c2;
+}
+
+.recognized-package {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: baseline;
+}
+
+.recognized-package > span {
+  color: #5de4c2;
+  font-size: 12px;
+}
+
+.recognized-package strong {
+  min-width: 0;
+  color: #f2f7ff;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.recognized-package p,
+.recognized-package small {
+  grid-column: 2;
+  margin: 2px 0 0;
+  color: #9ba8ba;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.recognized-package small {
+  color: #718096;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.custom-source-advanced {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(130, 148, 180, 0.18);
+}
+
+.custom-source-advanced summary {
+  color: #9ba8ba;
+  cursor: pointer;
+  font-size: 13px;
+  user-select: none;
+}
+
+.custom-source-advanced[open] summary {
+  margin-bottom: 14px;
+  color: #dce7ff;
+}
+
+.scan-candidates {
+  max-height: 230px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scan-candidate-main strong,
+.scan-candidate-main span,
+.scan-candidate-rule {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.scan-candidate-rule {
+  max-width: none;
+  color: #5de4c2;
+  font-family: inherit;
 }
